@@ -77,3 +77,20 @@ Ran 19 tests in 1.023s
 
 OK
 ```
+
+---
+
+## Post-merge fix — v0.7.1 (commit 97de0b9, PR #6)
+
+**Problem discovered in production**: The system prompt told the model
+`Your underlying model is deepseek-v4-pro`. Since `deepseek-v4-pro` is
+text-only, the model deduced from training knowledge that it couldn't
+process images and told users so — even though the proxy was already
+transparently routing image requests to `deepseek-chat` (vision-capable).
+
+**File changed**: `claude-ds` (wrapper script)
+
+| Change | Detail |
+|--------|--------|
+| System prompt — image support note added | Explicitly informs the model it CAN process images; that the proxy handles Files API / base64 rewriting and routes to `deepseek-chat`. Overrides incorrect self-assessment from model training. |
+| Version bump | `0.7.0` → `0.7.1` |
