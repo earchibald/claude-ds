@@ -208,7 +208,7 @@ else
   # Install files.
   if [[ "$overwrite_bin" -eq 1 ]]; then
     _install_file "$tmpdir/claude-ds"          "$dest_bin"  755
-    _install_file "$tmpdir/claude-ds-proxy.py" "$dest_proxy" 644
+    _install_file "$tmpdir/claude-ds-proxy.py" "$dest_proxy" 755
     info "installed to $install_dir/"
   fi
 fi
