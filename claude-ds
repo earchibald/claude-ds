@@ -1181,19 +1181,15 @@ _cds_prompt_proxy_choice() {
     echo "  xhigh/max       → DeepSeek max    (maximum reasoning)"
     echo "  no thinking     → DeepSeek none   (no reasoning tokens)"
     echo
-    echo "Not needed for normal use — DeepSeek works fine without it."
-    echo
-    echo "Enable if you want /effort to drive DeepSeek's depth:"
-    echo "  • [a] auto:high — translate claude's effort to DeepSeek"
+    echo "  • [a] auto:high — translate claude's effort to DeepSeek (default)"
     echo "  • [m] auto:max  — always force maximum reasoning"
     echo "  • [c] custom    — write the spec yourself (per-tier knobs, etc.)"
-    echo "  • [s] skip      — leave the proxy off (default; recommended)"
+    echo "  • [s] skip      — leave the proxy off"
     echo
   } >&2
-  printf "Choice [s/a/m/c, default s]: " >&2
+  printf "Choice [a/m/c/s, default a]: " >&2
   local choice; IFS= read -e -r choice
   case "${choice,,}" in
-    a)   printf 'auto:high' ;;
     m)   printf 'auto:max' ;;
     c)
       {
@@ -1206,7 +1202,8 @@ _cds_prompt_proxy_choice() {
       local custom; IFS= read -e -r custom
       printf '%s' "${custom:-off}"
       ;;
-    *)   printf 'off' ;;
+    s|off) printf 'off' ;;
+    *)   printf 'auto:high' ;;
   esac
 }
 
