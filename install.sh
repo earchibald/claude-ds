@@ -33,6 +33,15 @@ prompt() {
   printf '%s' "$answer"
 }
 
+# Check whether sudo is cached (no prompt) or will prompt.
+_sudo_status() {
+  if sudo -n true 2>/dev/null; then
+    printf 'cached'
+  else
+    printf 'prompt'
+  fi
+}
+
 # Install a file to a destination path, using sudo if the destination
 # directory is not user-writable.
 _install_file() {
@@ -42,7 +51,10 @@ _install_file() {
   if [[ -w "$destdir" ]]; then
     cp "$src" "$dest"
   else
-    info "need sudo to write to $destdir — you may be prompted for your password."
+    case "$(_sudo_status)" in
+      cached) info "using sudo to write to $destdir (cached) ..." ;;
+      prompt) info "need sudo to write to $destdir — you will be prompted for your password." ;;
+    esac
     sudo cp "$src" "$dest"
   fi
   chmod "$mode" "$dest" 2>/dev/null || sudo chmod "$mode" "$dest"
@@ -105,7 +117,10 @@ if [[ ! -d "$install_dir" ]]; then
   fi
   info "creating $install_dir ..."
   if [[ "$want_sudo" -eq 1 ]]; then
-    info "need sudo to create $install_dir — you may be prompted for your password."
+    case "$(_sudo_status)" in
+      cached) info "using sudo to create $install_dir (cached) ..." ;;
+      prompt) info "need sudo to create $install_dir — you will be prompted for your password." ;;
+    esac
     sudo mkdir -p "$install_dir"
   else
     mkdir -p "$install_dir"
