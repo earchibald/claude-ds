@@ -74,12 +74,24 @@ Each scenario is a function in `tests/harness.sh`. Status legend:
 # Run all (skips sudo tests):
 ./tests/harness.sh --ref worktree-cds-2-installer
 
-# Run one scenario:
-./tests/harness.sh --ref worktree-cds-2-installer T01
+# Run one or more scenarios:
+./tests/harness.sh --ref worktree-cds-2-installer T01 T05
 
-# Include sudo tests:
-./tests/harness.sh --ref worktree-cds-2-installer --include-sudo
+# Include sudo tests — pre-cache sudo first so the harness doesn't hang
+# at a password prompt it can't see:
+sudo -v && ./tests/harness.sh --ref worktree-cds-2-installer --include-sudo
 ```
+
+**Cache-buster.** The harness appends `?cb=<timestamp>-<rand>` to the
+install.sh URL because raw.githubusercontent.com has a ~5min cache TTL
+that otherwise makes post-push iteration painful.
+
+**Sudo tests.** T13 hits `/usr/local/bin`, which on macOS requires
+`sudo`. The harness can't enter a password through tmux send-keys
+(security: the password prompt reads from /dev/tty and refuses
+non-tty input by default). Workaround: run `sudo -v` once
+interactively before the test pass; sudo's credential cache (5min
+default) covers the test run.
 
 Output: each scenario prints `PASS` / `FAIL` with the assertion that
 tripped. On failure, the captured tmux pane is preserved at
