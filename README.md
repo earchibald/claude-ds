@@ -667,6 +667,7 @@ this is reliable.
 ├── CDS-4-MANIFEST.md      # [[CDS-4-MANIFEST]] — change log for CDS-4 image proxy work
 └── docs/
     ├── claude-ds.md       # user-facing guide
+    ├── deepseek-vision-research.md  # [[deepseek-vision-research]] — research findings, attempt log, and constraints for DeepSeek vision integration
     ├── secretref-lib.md   # embedded reusable secretref library docs
     └── infisical-adapter.md
 ```

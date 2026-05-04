@@ -364,9 +364,17 @@ class TestProxyIntegration(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             resp.read()
         upstream_msgs = json.loads(_UpstreamCapture.last_request["body"])["messages"]
-        for turn_idx in (0, 2):
-            src = upstream_msgs[turn_idx]["content"][0]["source"]
-            self.assertEqual(src["type"], "base64", f"turn {turn_idx}")
+        # _normalize_for_vision consolidates images into the last user turn.
+        # turn 0 (non-last) should have a placeholder text, not an image.
+        turn0_types = [b.get("type") for b in upstream_msgs[0]["content"]]
+        self.assertNotIn("image", turn0_types, "images should be moved out of turn 0")
+        # turn 2 (last user turn) should have both images (hoisted + original).
+        turn2_images = [
+            b for b in upstream_msgs[2]["content"] if b.get("type") == "image"
+        ]
+        self.assertEqual(len(turn2_images), 2, "both images should be in last turn")
+        for img in turn2_images:
+            self.assertEqual(img["source"]["type"], "base64")
 
     def test_files_api_beta_header_stripped(self):
         fid = self._upload_and_get_fid()
@@ -507,6 +515,210 @@ class TestProxyIntegration(unittest.TestCase):
 
         os.environ.pop("EFFORT_DEFAULT", None)
         _reload_proxy()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Unit tests for _normalize_for_vision ─────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestNormalizeForVision(unittest.TestCase):
+    """Unit tests for the _normalize_for_vision() function.
+
+    Verifies that images are always consolidated into the last user turn,
+    tool_use / tool_result blocks are flattened, and the top-level ``tools``
+    and ``tool_choice`` keys are removed.
+    """
+
+    def _img(self) -> dict:
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": _RED_PNG_B64},
+        }
+
+    def _text(self, text: str) -> dict:
+        return {"type": "text", "text": text}
+
+    def _normalize(self, obj: dict) -> dict:
+        import copy
+        obj_copy = copy.deepcopy(obj)
+        proxy._normalize_for_vision(obj_copy, obj_copy["messages"])
+        return obj_copy
+
+    def test_single_turn_image_preserved(self):
+        """Image already in last (only) turn stays there, image first."""
+        obj = {
+            "messages": [
+                {"role": "user", "content": [self._img(), self._text("What is this?")]},
+            ]
+        }
+        result = self._normalize(obj)
+        content = result["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "image")
+        self.assertTrue(any(b["type"] == "text" for b in content))
+
+    def test_image_injected_into_last_user_turn(self):
+        """Image from an earlier user turn is moved to the last user turn."""
+        obj = {
+            "messages": [
+                {"role": "user", "content": [self._img(), self._text("Hi")]},
+                {"role": "assistant", "content": "Hello!"},
+                {"role": "user", "content": [self._text("Describe the image.")]},
+            ]
+        }
+        result = self._normalize(obj)
+        first_content = result["messages"][0]["content"]
+        self.assertFalse(any(b.get("type") == "image" for b in first_content))
+        last_content = result["messages"][2]["content"]
+        self.assertTrue(any(b.get("type") == "image" for b in last_content))
+        self.assertEqual(last_content[0]["type"], "image")
+
+    def test_tool_result_image_extracted_in_last_turn(self):
+        """Image nested in tool_result in the last user turn is unwrapped."""
+        obj = {
+            "tools": [{"name": "Read", "description": "read file"}],
+            "messages": [
+                {"role": "user", "content": "What is this?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/img.png"}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": [self._img()]},
+                    ],
+                },
+            ],
+        }
+        result = self._normalize(obj)
+        self.assertNotIn("tools", result)
+        asst_content = result["messages"][1]["content"]
+        self.assertEqual(asst_content[0]["type"], "text")
+        self.assertIn("Read", asst_content[0]["text"])
+        last_content = result["messages"][2]["content"]
+        self.assertEqual(last_content[0]["type"], "image")
+        self.assertFalse(any(b.get("type") == "tool_result" for b in last_content))
+
+    def test_tool_result_image_in_earlier_turn_moves_to_last(self):
+        """Image in a tool_result in an earlier turn is moved to the final turn."""
+        obj = {
+            "messages": [
+                {"role": "user", "content": "What is this?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/img.png"}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": [self._img()]},
+                    ],
+                },
+                {"role": "assistant", "content": "I read the image."},
+                {"role": "user", "content": [self._text("Describe it.")]},
+            ],
+        }
+        result = self._normalize(obj)
+        mid_content = result["messages"][2]["content"]
+        self.assertFalse(any(b.get("type") == "image" for b in mid_content))
+        self.assertFalse(any(b.get("type") == "tool_result" for b in mid_content))
+        last_content = result["messages"][4]["content"]
+        self.assertEqual(last_content[0]["type"], "image")
+
+    def test_multiple_images_all_in_last_turn(self):
+        """Multiple images from different turns all end up in the last turn."""
+        obj = {
+            "messages": [
+                {"role": "user", "content": [self._img(), self._text("First.")]},
+                {"role": "assistant", "content": "Got it."},
+                {"role": "user", "content": [self._img(), self._text("Second.")]},
+                {"role": "assistant", "content": "OK."},
+                {"role": "user", "content": [self._text("Compare them.")]},
+            ]
+        }
+        result = self._normalize(obj)
+        last_content = result["messages"][4]["content"]
+        image_blocks = [b for b in last_content if b.get("type") == "image"]
+        self.assertEqual(len(image_blocks), 2)
+
+    def test_tools_and_tool_choice_stripped(self):
+        """Top-level tools and tool_choice keys are removed."""
+        obj = {
+            "tools": [{"name": "Foo"}],
+            "tool_choice": {"type": "auto"},
+            "messages": [
+                {"role": "user", "content": [self._img(), self._text("Hi")]},
+            ],
+        }
+        result = self._normalize(obj)
+        self.assertNotIn("tools", result)
+        self.assertNotIn("tool_choice", result)
+
+    def test_no_images_returns_zero(self):
+        """When there are no images, the function returns 0."""
+        obj = {
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "How are you?"},
+            ]
+        }
+        import copy
+        original = copy.deepcopy(obj)
+        count = proxy._normalize_for_vision(obj, obj["messages"])
+        self.assertEqual(count, 0)
+        self.assertEqual(obj["messages"], original["messages"])
+
+    def test_files_api_path_full_pipeline(self):
+        """Files-API path: file_id rewrite + vision normalize delivers image to last turn."""
+        fake_id = "file_testvision"
+        with proxy._FILE_CACHE_LOCK:
+            proxy._FILE_CACHE[fake_id] = {
+                "data": _RED_PNG_B64,
+                "media_type": "image/png",
+                "filename": "test.png",
+                "size": len(_RED_PNG_B64),
+            }
+        os.environ["VISION_MODEL"] = "deepseek-chat"
+        _reload_proxy()
+        with proxy._FILE_CACHE_LOCK:
+            proxy._FILE_CACHE[fake_id] = {
+                "data": _RED_PNG_B64,
+                "media_type": "image/png",
+                "filename": "test.png",
+                "size": len(_RED_PNG_B64),
+            }
+
+        body = json.dumps({
+            "model": "claude-opus-4-7",
+            "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Look at this:"},
+                        {"type": "image", "source": {"type": "file", "file_id": fake_id}},
+                    ],
+                },
+            ],
+        }).encode()
+
+        result_bytes = proxy._rewrite_body(body)
+        os.environ.pop("VISION_MODEL", None)
+        _reload_proxy()
+
+        result = json.loads(result_bytes)
+        self.assertEqual(result["model"], "deepseek-chat")
+        last_content = result["messages"][-1].get("content", [])
+        image_blocks = [b for b in last_content if isinstance(b, dict) and b.get("type") == "image"]
+        self.assertEqual(len(image_blocks), 1)
+        self.assertEqual(image_blocks[0]["source"]["data"], _RED_PNG_B64)
 
 
 if __name__ == "__main__":

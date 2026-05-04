@@ -545,7 +545,11 @@ def _rewrite_file_sources(messages: list) -> int:
 
 
 def _has_image_content(messages: list) -> bool:
-    """Return True if any content block in `messages` is an image."""
+    """Return True if any content block in `messages` is an image.
+
+    Checks both direct image blocks and images nested inside tool_result blocks
+    (which is how Claude Code's Read-tool path returns images from disk).
+    """
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -553,10 +557,145 @@ def _has_image_content(messages: list) -> bool:
         for block in content:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") != "image":
-                continue
-            return True
+            btype = block.get("type")
+            if btype == "image":
+                return True
+            # Images from the Read tool arrive nested inside tool_result content.
+            if btype == "tool_result":
+                nested = block.get("content")
+                if isinstance(nested, list):
+                    for nb in nested:
+                        if isinstance(nb, dict) and nb.get("type") == "image":
+                            return True
     return False
+
+
+def _normalize_for_vision(obj: dict, messages: list) -> int:
+    """Consolidate all images into the last user turn for DeepSeek vision.
+
+    DeepSeek's Anthropic-compatible endpoint only processes images in the most
+    recent (last) user message.  Images in earlier turns — whether direct image
+    blocks or images nested inside tool_result content from Claude's Read tool —
+    are silently ignored.
+
+    This function performs a single-pass normalisation in-place:
+
+    1. Strips the top-level ``tools`` and ``tool_choice`` keys so DeepSeek
+       doesn't reject the request for using Anthropic-only tool formats.
+    2. For every assistant message, converts each ``tool_use`` block into a
+       plain-text description (e.g. "[used Read tool: 'file_path'='/tmp/img.png']")
+       so the model retains tool context without the structured block.
+    3. For every user message that is NOT the last user message, extracts any
+       image blocks (direct or nested in tool_result) into a collection list,
+       and replaces each with a text placeholder.  Non-image text content is
+       preserved.
+    4. For the last user message, extracts images from tool_result wrappers
+       (flattening the tool_result into plain blocks) and adds all collected
+       images to the front of that message's content list.
+
+    Returns the number of images consolidated.
+    """
+    if not messages:
+        return 0
+
+    last_user_idx = next(
+        (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+        None,
+    )
+    if last_user_idx is None:
+        return 0
+
+    # Remove tool keys — DeepSeek vision doesn't support Anthropic tool schemas.
+    for key in ("tools", "tool_choice"):
+        obj.pop(key, None)
+
+    images_collected: list = []
+
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role == "assistant":
+            if not isinstance(content, list):
+                continue
+            new_content: list = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = block.get("name", "tool")
+                    inp = block.get("input") or {}
+                    desc = ", ".join(f"{k}={v!r}" for k, v in inp.items()) if inp else ""
+                    label = f"[used {name} tool{': ' + desc if desc else ''}]"
+                    new_content.append({"type": "text", "text": label})
+                else:
+                    new_content.append(block)
+            msg["content"] = new_content
+
+        elif role == "user" and i != last_user_idx:
+            if not isinstance(content, list):
+                continue
+            new_content = []
+            for block in content:
+                if not isinstance(block, dict):
+                    new_content.append(block)
+                    continue
+                btype = block.get("type")
+                if btype == "image":
+                    images_collected.append(block)
+                    new_content.append({"type": "text", "text": "[image — in current turn]"})
+                elif btype == "tool_result":
+                    inner = block.get("content")
+                    if isinstance(inner, list):
+                        for nb in inner:
+                            if isinstance(nb, dict) and nb.get("type") == "image":
+                                images_collected.append(nb)
+                            elif isinstance(nb, dict) and nb.get("type") == "text":
+                                new_content.append(nb)
+                    elif isinstance(inner, str):
+                        new_content.append({"type": "text", "text": inner})
+                else:
+                    new_content.append(block)
+            msg["content"] = new_content
+
+        elif role == "user" and i == last_user_idx:
+            # Flatten tool_result blocks in the last user turn; extract images.
+            if not isinstance(content, list):
+                continue
+            new_content = []
+            for block in content:
+                if not isinstance(block, dict):
+                    new_content.append(block)
+                    continue
+                btype = block.get("type")
+                if btype == "image":
+                    images_collected.append(block)
+                elif btype == "tool_result":
+                    inner = block.get("content")
+                    if isinstance(inner, list):
+                        for nb in inner:
+                            if isinstance(nb, dict) and nb.get("type") == "image":
+                                images_collected.append(nb)
+                            elif isinstance(nb, dict) and nb.get("type") == "text":
+                                new_content.append(nb)
+                    elif isinstance(inner, str):
+                        new_content.append({"type": "text", "text": inner})
+                else:
+                    new_content.append(block)
+            msg["content"] = new_content
+
+    if not images_collected:
+        return 0
+
+    _log(f"injecting {len(images_collected)} image(s) into last user turn (DeepSeek vision)")
+
+    # Prepend all collected images to the last user turn's content.
+    last_msg = messages[last_user_idx]
+    last_content = last_msg.get("content")
+    if isinstance(last_content, str):
+        last_content = [{"type": "text", "text": last_content}]
+    elif not isinstance(last_content, list):
+        last_content = []
+    last_msg["content"] = images_collected + last_content
+    return len(images_collected)
 
 
 def _rewrite_body(body: bytes) -> bytes:
@@ -576,13 +715,18 @@ def _rewrite_body(body: bytes) -> bytes:
             _log(f"rewrote {subs} file-source block(s) in messages")
 
     # Pass 1b: if the request contains images and VISION_MODEL is set,
-    # transparently swap the model so it routes to a vision-capable backend.
+    # transparently swap the model and normalise the message list so that
+    # DeepSeek can actually see the image.  _normalize_for_vision consolidates
+    # all images into the last user turn (the only turn DeepSeek processes for
+    # vision) and strips tool_use / tool_result / tools key machinery that
+    # causes DeepSeek to silently ignore the image.
     routed_to_vision = False
     if VISION_MODEL and isinstance(messages, list) and _has_image_content(messages):
         original_model = obj.get("model", "")
         if original_model != VISION_MODEL:
             obj["model"] = VISION_MODEL
             _log(f"image detected — overriding model {original_model!r} → {VISION_MODEL!r}")
+        _normalize_for_vision(obj, messages)
         routed_to_vision = True
 
     # Pass 2: apply reasoning-effort transformation.
