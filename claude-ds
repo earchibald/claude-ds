@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ds"
 CONFIG_FILE="$CONFIG_DIR/config"
 KEYCHAIN_SERVICE="claude-ds"
@@ -1863,6 +1863,8 @@ CLAUDE_DS_SYSTEM_PROMPT="\
 # claude-ds
 You are running via **claude-ds** — a wrapper that routes \`claude\` through DeepSeek's Anthropic-compatible API.
 Your underlying model is \`${resolved_model:-deepseek-v4-pro}\`.
+
+**Image support**: You CAN process image attachments. The proxy transparently intercepts Claude Code's Files API uploads and rewrites \`file_id\` references to inline base64, then routes image-containing requests to \`deepseek-chat\` (vision-capable). You will receive and can describe images pasted in the chat — do not claim otherwise.
 
 ## Config: ~/.config/claude-ds/config
 \`key=value\` file (mode 0600). Stanzas and \`#\` comments preserved.
