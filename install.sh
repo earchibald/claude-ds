@@ -213,6 +213,31 @@ else
   fi
 fi
 
+# ---- stale system-level proxy sync ------------------------------------------
+# If a claude-ds-proxy.py exists in a system path that differs from where we
+# just installed (e.g. a root-owned /usr/local/bin/claude-ds-proxy.py from a
+# previous install), offer to update it so it doesn't shadow or diverge.
+for _sys_proxy in /usr/local/bin/claude-ds-proxy.py /opt/homebrew/bin/claude-ds-proxy.py; do
+  if [[ "$_sys_proxy" != "$dest_proxy" && -f "$_sys_proxy" ]]; then
+    if ! diff -q "$dest_proxy" "$_sys_proxy" >/dev/null 2>&1; then
+      echo
+      warn "stale proxy found at $_sys_proxy (different from the one just installed)."
+      warn "This can cause existing sessions to use the old version."
+      _stale_choice=$(prompt "Sync $_sys_proxy to match the new version? [Y/n, default y]:" </dev/tty)
+      case "${_stale_choice:-y}" in
+        [Yy]*)
+          case "$(_sudo_status)" in
+            cached) info "using cached sudo to update $_sys_proxy ..." ;;
+            prompt) info "sudo required to update $_sys_proxy — you will be prompted for your password." ;;
+          esac
+          sudo cp "$dest_proxy" "$_sys_proxy" && info "updated $_sys_proxy" || warn "could not update $_sys_proxy — run: sudo cp $dest_proxy $_sys_proxy"
+          ;;
+        *) warn "skipped — run manually: sudo cp $dest_proxy $_sys_proxy" ;;
+      esac
+    fi
+  fi
+done
+
 # ---- PATH check --------------------------------------------------------------
 if ! echo "${PATH:-}" | tr ':' '\n' | grep -q -F "$install_dir"; then
   echo
