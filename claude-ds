@@ -1094,6 +1094,7 @@ SECRETREF_LOG_PREFIX="claude-ds"
 write_config() {
   local ref="$1"
   local proxy_choice="${2:-off}"   # "off" | "auto" | "auto:high" | "auto:max" | …
+  local auto_mode="${3:-}"         # "" (off) | "1" (enabled)
   umask 077
   mkdir -p "$CONFIG_DIR"
   chmod 700 "$CONFIG_DIR"
@@ -1114,8 +1115,13 @@ write_config() {
     printf '# Auto-mode unlock — set to 1 to spoof Claude-canonical model ids\n'
     printf '# so claude'\''s `--auto` permission classifier accepts the session.\n'
     printf '# Also opt into capabilities advertised to claude:\n'
-    printf '# unlock_auto_mode=1\n'
-    printf '# capabilities=effort,thinking\n'
+    if [[ "$auto_mode" == "1" ]]; then
+      printf 'unlock_auto_mode=1\n'
+      printf '# capabilities=effort,thinking\n'
+    else
+      printf '# unlock_auto_mode=1\n'
+      printf '# capabilities=effort,thinking\n'
+    fi
     printf '\n'
     printf '# ---- Reasoning-effort proxy ---------------------------------------\n'
     printf '#\n'
@@ -1164,15 +1170,22 @@ _cds_prompt_proxy_choice() {
     echo
     echo "Reasoning-effort proxy (optional)"
     echo "─────────────────────────────────"
-    echo "claude already triggers DeepSeek's default reasoning depth via"
-    echo "/think, /think-hard, /ultrathink — you don't need the proxy for"
-    echo "normal use."
+    echo "DeepSeek auto-detects \"high\" reasoning when claude sends a"
+    echo "thinking block (which it does by default). Claude's /effort levels"
+    echo "(low/medium/high/xhigh/max) are NOT understood by DeepSeek — it"
+    echo "ignores budget_tokens and maps everything to \"high\"."
     echo
-    echo "Enable it if you want to FORCE a specific reasoning regime"
-    echo "regardless of what claude requests:"
-    echo "  • [a] auto:high — always at least default reasoning, even when"
-    echo "        claude wouldn't normally enable thinking"
-    echo "  • [m] auto:max  — maximum reasoning on every request"
+    echo "The proxy translates claude's effort levels into DeepSeek's"
+    echo "reasoning_effort so /effort actually changes behavior:"
+    echo "  low/medium/high → DeepSeek high   (default reasoning)"
+    echo "  xhigh/max       → DeepSeek max    (maximum reasoning)"
+    echo "  no thinking     → DeepSeek none   (no reasoning tokens)"
+    echo
+    echo "Not needed for normal use — DeepSeek works fine without it."
+    echo
+    echo "Enable if you want /effort to drive DeepSeek's depth:"
+    echo "  • [a] auto:high — translate claude's effort to DeepSeek"
+    echo "  • [m] auto:max  — always force maximum reasoning"
     echo "  • [c] custom    — write the spec yourself (per-tier knobs, etc.)"
     echo "  • [s] skip      — leave the proxy off (default; recommended)"
     echo
@@ -1197,11 +1210,35 @@ _cds_prompt_proxy_choice() {
   esac
 }
 
+# Interactive opt-in for auto-mode unlock. Echoes "1" or "" (empty = off).
+_cds_prompt_auto_mode() {
+  {
+    echo
+    echo "Auto-mode unlock (optional)"
+    echo "───────────────────────────"
+    echo "Claude Code's 'auto mode' — the permission classifier that auto-approves"
+    echo "routine tool calls — is gated on the model ID matching a known Claude"
+    echo "model name (e.g. claude-opus-4-7). Since claude-ds runs against DeepSeek,"
+    echo "the gate blocks auto mode by default."
+    echo
+    echo "Setting unlock_auto_mode=1 spoofs the wire-level model ID so the gate"
+    echo "passes. The /model picker still shows real DeepSeek labels. This does"
+    echo "NOT change which model serves requests — it only satisfies the classifier."
+    echo
+    echo "Whether this works depends on your provider: most Anthropic-compat shims"
+    echo "route by URL+token and ignore the model name in the request body. If"
+    echo "DeepSeek rejects the spoofed ID, leave it off and run without auto mode."
+    echo
+  } >&2
+  printf "Enable auto-mode unlock? [y/N, default n]: " >&2
+  local choice; IFS= read -e -r choice
+  case "${choice,,}" in
+    y|yes) printf '1' ;;
+    *)     printf '' ;;
+  esac
+}
+
 # Validate a freshly-captured (ref, key) pair against the upstream API
-# before we persist it. On a clear unauth response, offer to retry.
-# Network / advisory failures are not fatal — they emit a one-line note
-# and let the user proceed, since first-run on a flaky network shouldn't
-# block setup.
 _cds_validate_or_warn() {
   local ref="$1" base="$2" model="$3"
   local token
@@ -1226,12 +1263,13 @@ _cds_validate_or_warn() {
 }
 
 prompt_for_key() {
-  local ref attempts=0 proxy_choice
+  local ref attempts=0 proxy_choice auto_mode
   while :; do
     ref=$(secretref_prompt "DeepSeek API key for claude-ds")
     if _cds_validate_or_warn "$ref" "$DEFAULT_BASE_URL" "$DEFAULT_MODEL"; then
       proxy_choice=$(_cds_prompt_proxy_choice)
-      write_config "$ref" "$proxy_choice"
+      auto_mode=$(_cds_prompt_auto_mode)
+      write_config "$ref" "$proxy_choice" "$auto_mode"
       return 0
     fi
     _cds_warn "$DEFAULT_BASE_URL rejected the supplied key (HTTP 401/403)."
@@ -1239,7 +1277,8 @@ prompt_for_key() {
     if [[ "$attempts" -ge 3 ]]; then
       _cds_warn "saving anyway after 3 attempts — rerun --rotate-key once you have a working key."
       proxy_choice=$(_cds_prompt_proxy_choice)
-      write_config "$ref" "$proxy_choice"
+      auto_mode=$(_cds_prompt_auto_mode)
+      write_config "$ref" "$proxy_choice" "$auto_mode"
       return 0
     fi
     printf "Try a different reference? [Y/n]: " >&2
@@ -1247,7 +1286,8 @@ prompt_for_key() {
     case "$again" in
       n|N)
         proxy_choice=$(_cds_prompt_proxy_choice)
-        write_config "$ref" "$proxy_choice"
+        auto_mode=$(_cds_prompt_auto_mode)
+        write_config "$ref" "$proxy_choice" "$auto_mode"
         return 0
         ;;
     esac
@@ -1265,15 +1305,17 @@ if [[ "$RESET" -eq 1 ]]; then
     _cds_migrate_config "$CONFIG_FILE"
     old_ref=$(awk -F= '$1=="api_key_ref"{sub(/^api_key_ref=/,""); print; exit}' "$CONFIG_FILE" || true)
     new_ref=$(secretref_reset_interactive "$old_ref" "DeepSeek API key for claude-ds")
-    # Preserve the user's existing proxy_effort choice across rotation —
-    # rotating an API key shouldn't silently flip the proxy back to off.
+    # Preserve the user's existing proxy_effort and unlock_auto_mode choices
+    # across rotation — rotating an API key shouldn't silently flip these back.
     existing_proxy=$(awk -F= '$1=="proxy_effort"{sub(/^proxy_effort=/,""); print; exit}' "$CONFIG_FILE" || true)
     [[ -z "$existing_proxy" ]] && existing_proxy="off"
+    existing_auto=$(awk -F= '$1=="unlock_auto_mode"{sub(/^unlock_auto_mode=/,""); print; exit}' "$CONFIG_FILE" || true)
+    [[ -z "$existing_auto" ]] && existing_auto=""
     # Best-effort liveness check on the new ref (not fatal — the user has
     # already committed to this reference via the interactive flow).
     _cds_validate_or_warn "$new_ref" "${DEFAULT_BASE_URL}" "$DEFAULT_MODEL" || \
       _cds_warn "saved despite liveness-check failure — run --doctor for diagnostics."
-    write_config "$new_ref" "$existing_proxy"
+    write_config "$new_ref" "$existing_proxy" "$existing_auto"
     _cds_log "wrote config $CONFIG_FILE (proxy_effort preserved: $existing_proxy)."
   else
     _cds_log "no existing config file at $CONFIG_FILE — running first-run prompt."

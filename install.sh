@@ -6,7 +6,8 @@
 # Downloads claude-ds and claude-ds-proxy.py, asks where to install,
 # handles sudo when the target dir isn't user-writable, gracefully
 # handles existing installs, then runs `claude-ds --setup` for
-# first-time onboarding (config creation, secret ref, proxy opt-in)
+# first-time onboarding (config creation, secret ref, proxy opt-in,
+# auto-mode unlock opt-in)
 # without launching a claude session.
 
 set -euo pipefail
@@ -206,7 +207,7 @@ if [[ "$run_setup" -eq 1 ]]; then
   echo
   info "running first-time onboarding (claude-ds --setup) ..."
   echo
-  exec "$dest_bin" --setup
+  exec "$dest_bin" --setup < /dev/tty
 else
   echo
   info "skipping onboarding — run 'claude-ds' to start a session."
