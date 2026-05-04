@@ -1774,6 +1774,11 @@ if [[ "$proxy_needed" -eq 1 ]]; then
     # invocation); we now overwrite the var for claude's own env.
     export ANTHROPIC_BASE_URL="http://${proxy_bind_val}:${proxy_port}"
 
+    # The proxy intercepts /v1/files (Files API) and strips experimental-beta
+    # headers before forwarding to DeepSeek. Allow Claude Code to use the
+    # Files API so image uploads flow through our proxy for base64 rewriting.
+    unset CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+
     # Friendly summary on stderr so users can see the wiring at a glance.
     _cds_log "reasoning-effort proxy on ${proxy_bind_val}:${proxy_port} → DeepSeek (default=${effort_default:-off}, per-model=${effort_map:-<none>})"
   fi

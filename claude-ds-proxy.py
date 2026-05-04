@@ -68,10 +68,17 @@
 #   EFFORT_MAP          per-wire-model overrides. semicolon-separated
 #                       `<model>=<spec>` pairs.
 #                       e.g. "claude-opus-4-7=auto;claude-sonnet-4-6=high"
-#   PROXY_DEBUG         "1" to log rewrites/requests to stderr.
+#   PROXY_DEBUG         "1" to log rewrites/requests and full header
+#                       analysis (incoming + outgoing) to stderr.
 #   VISION_MODEL        model to use when the request contains images (base64
 #                       or file-source blocks).  default: deepseek-chat
 #                       set to "" to disable auto-routing.
+#   PROXY_STRIP_HEADERS comma/semicolon-separated header names to
+#                       unconditionally strip from all upstream requests.
+#                       e.g. "X-Stainless-Arch,X-Stainless-OS"
+#   PROXY_ADD_HEADERS   semicolon-separated "Name: value" pairs to inject
+#                       into every upstream request.
+#                       e.g. "X-Custom-Key: abc; X-Env: prod"
 #
 # ── Spec language (value side of EFFORT_MAP / EFFORT_DEFAULT) ───────────────
 #
@@ -299,8 +306,9 @@ def _log(*args):
         print("[claude-ds-proxy]", *args, file=sys.stderr, flush=True)
 
 
-# ---------- request rewriting ----------------------------------------------
+# ---------- header pipeline -------------------------------------------------
 
+# HTTP/1.1 hop-by-hop headers — never forward through a proxy.
 _HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -311,6 +319,135 @@ _HOP_BY_HOP = {
     "transfer-encoding",
     "upgrade",
 }
+
+# Additional headers the proxy always strips from Claude → upstream.
+# Extend this set as new incompatibilities are found.
+_STRIP_REQUEST_HEADERS: set = {
+    "host",           # replaced with upstream host
+    "content-length", # recomputed after body rewriting
+}
+
+# anthropic-beta field values (substring match) to strip from the
+# `anthropic-beta` header before forwarding.  The proxy implements the
+# Files API locally, so upstream never needs to see that beta token.
+# Add any other DeepSeek-incompatible beta values here.
+_STRIP_ANTHROPIC_BETA_VALUES: set = {
+    "files-api",
+    # "prompt-caching" and "interleaved-thinking" are generally fine to
+    # pass through; add here if they cause DeepSeek 400s.
+}
+
+# Optional extra headers to inject into every upstream request.
+# Populated from env PROXY_ADD_HEADERS="Name: value; Name2: value2"
+_ADD_UPSTREAM_HEADERS: list = []
+
+def _load_add_headers():
+    """Parse PROXY_ADD_HEADERS env var into (name, value) pairs."""
+    raw = os.environ.get("PROXY_ADD_HEADERS", "").strip()
+    if not raw:
+        return
+    for entry in raw.split(";"):
+        entry = entry.strip()
+        if ":" not in entry:
+            continue
+        name, _, value = entry.partition(":")
+        _ADD_UPSTREAM_HEADERS.append((name.strip(), value.strip()))
+
+_load_add_headers()
+
+# Optional extra headers to strip (comma or semicolon separated header names).
+# Populated from env PROXY_STRIP_HEADERS="X-Foo,X-Bar"
+_EXTRA_STRIP_HEADERS: set = set()
+
+def _load_strip_headers():
+    raw = os.environ.get("PROXY_STRIP_HEADERS", "").strip()
+    if not raw:
+        return
+    for name in raw.replace(";", ",").split(","):
+        name = name.strip().lower()
+        if name:
+            _EXTRA_STRIP_HEADERS.add(name)
+
+_load_strip_headers()
+
+
+def _build_upstream_headers(incoming_headers, body: bytes) -> list:
+    """Build the header list to send upstream from `incoming_headers`.
+
+    In DEBUG mode logs every header decision (pass / strip / rewrite /
+    inject) so problems with the Claude ↔ proxy ↔ DeepSeek header
+    negotiation are immediately visible.
+
+    Returns a list of (name, value) tuples.
+    """
+    if DEBUG:
+        _log("── incoming headers from Claude ──────────────────────────────")
+        for h, v in incoming_headers.items():
+            _log(f"  {h}: {v}")
+        _log("─────────────────────────────────────────────────────────────")
+
+    out = []
+    for h, v in incoming_headers.items():
+        hl = h.lower()
+
+        # 1. Hop-by-hop — never forward.
+        if hl in _HOP_BY_HOP:
+            _log(f"  strip (hop-by-hop)   {h}: {v}")
+            continue
+
+        # 2. Mandatory proxy-managed headers — always recomputed below.
+        if hl in _STRIP_REQUEST_HEADERS:
+            _log(f"  strip (proxy-managed) {h}: {v}")
+            continue
+
+        # 3. Caller-configured strip list.
+        if hl in _EXTRA_STRIP_HEADERS:
+            _log(f"  strip (configured)   {h}: {v}")
+            continue
+
+        # 4. anthropic-beta — strip incompatible field values, pass the rest.
+        if hl == "anthropic-beta":
+            fields = [f.strip() for f in v.split(",")]
+            kept = []
+            dropped = []
+            for f in fields:
+                if any(bad in f.lower() for bad in _STRIP_ANTHROPIC_BETA_VALUES):
+                    dropped.append(f)
+                else:
+                    kept.append(f)
+            if dropped:
+                _log(f"  strip beta field(s)  anthropic-beta: {dropped}")
+            if kept:
+                joined = ", ".join(kept)
+                _log(f"  pass (filtered)      anthropic-beta: {joined}")
+                out.append((h, joined))
+            else:
+                _log(f"  strip (all filtered) anthropic-beta: {v}")
+            continue
+
+        # 5. Pass through.
+        _log(f"  pass                 {h}: {v}")
+        out.append((h, v))
+
+    # 6. Inject mandatory proxy-side headers.
+    out.append(("Host", UP_HOST))
+    _log(f"  inject               Host: {UP_HOST}")
+    if body:
+        out.append(("Content-Length", str(len(body))))
+        _log(f"  inject               Content-Length: {len(body)}")
+
+    # 7. Inject caller-configured extra headers.
+    for name, value in _ADD_UPSTREAM_HEADERS:
+        out.append((name, value))
+        _log(f"  inject (configured)  {name}: {value}")
+
+    if DEBUG:
+        _log("── outgoing headers to upstream ──────────────────────────────")
+        for h, v in out:
+            _log(f"  {h}: {v}")
+        _log("─────────────────────────────────────────────────────────────")
+
+    return out
 
 
 def _should_inject(method: str, path: str) -> bool:
@@ -512,20 +649,7 @@ class Proxy(BaseHTTPRequestHandler):
             if "json" in ctype:
                 body = _rewrite_body(body)
 
-        fwd_headers = []
-        for h, v in self.headers.items():
-            if h.lower() in _HOP_BY_HOP:
-                continue
-            if h.lower() in ("host", "content-length"):
-                continue
-            # Strip the Files-API beta header — DeepSeek rejects it.
-            if h.lower() == "anthropic-beta" and "files-api" in v.lower():
-                _log(f"stripped header {h}: {v}")
-                continue
-            fwd_headers.append((h, v))
-        fwd_headers.append(("Host", UP_HOST))
-        if body:
-            fwd_headers.append(("Content-Length", str(len(body))))
+        fwd_headers = _build_upstream_headers(self.headers, body)
 
         target_path = UP_PATH_PREFIX + self.path
 
