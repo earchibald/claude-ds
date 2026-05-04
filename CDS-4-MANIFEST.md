@@ -1,0 +1,79 @@
+# CDS-4 Change Manifest
+
+Tracks every change made to the system as part of
+[CDS-4 — proxy: handle images and configure claude to use proxy for images POST](README.md).
+
+---
+
+## Files modified
+
+### `claude-ds-proxy.py`
+
+**New imports added** (stdlib-only, no new dependencies):
+
+| Import | Reason |
+|--------|--------|
+| `base64` | Encode uploaded file bytes to base64 for the cache and for the rewritten source blocks. |
+| `email.parser` | Parse `multipart/form-data` bodies — stdlib's `email` package provides a spec-compliant MIME parser. |
+| `mimetypes` | Guess `media_type` from filenames when the upload doesn't specify a content-type. |
+| `uuid` | Generate unique, unpredictable `file_id` values for the in-memory cache. |
+
+**New module-level state:**
+
+| Symbol | Purpose |
+|--------|---------|
+| `_FILE_CACHE: dict` | In-memory store — maps `file_id → {data, media_type, filename, size}`. |
+| `_FILE_CACHE_LOCK: threading.Lock` | Protects `_FILE_CACHE` for thread-safe concurrent access. |
+
+**New functions:**
+
+| Function | Purpose |
+|----------|---------|
+| `_store_file(data, filename, media_type) → file_id` | Encode `data` to base64, store in cache, return generated id. |
+| `_lookup_file(file_id) → dict \| None` | Thread-safe cache lookup. |
+| `_parse_multipart(content_type, body) → list \| None` | Parse `multipart/form-data` using `email.parser.BytesParser`. |
+| `_is_files_upload(method, path) → bool` | Detect `POST /v1/files` requests. |
+| `_rewrite_file_sources(messages) → int` | Scan every content block in all messages; swap `source.type == "file"` blocks to inline base64. Returns substitution count. |
+
+**Modified functions:**
+
+| Function | Change |
+|----------|--------|
+| `_rewrite_body(body)` | Added Pass 1 before the effort pass: calls `_rewrite_file_sources` when the body contains a `messages` array. |
+| `Proxy._handle(self)` | Added Files API interception: delegates `POST /v1/files` to `_handle_files_upload`. Strips `anthropic-beta: files-api-*` header from outgoing forwarded requests. |
+
+**New methods on `Proxy`:**
+
+| Method | Purpose |
+|--------|---------|
+| `_handle_files_upload(self, body)` | Parse multipart or raw-binary upload, call `_store_file`, return mock Anthropic Files API JSON response. Does NOT forward to upstream. |
+
+---
+
+## Files created
+
+| File | Purpose |
+|------|---------|
+| `tests/__init__.py` | Makes `tests/` a Python package so `python3 -m unittest tests.test_proxy_images` resolves correctly. |
+| `tests/test_proxy_images.py` | Full TDD test suite — 19 tests across 4 classes covering unit (multipart parser, file cache, source rewriting) and integration (live proxy + mock upstream). |
+| `CDS-4-MANIFEST.md` | This file. |
+
+---
+
+## No system-level changes
+
+All additions are:
+- **In-process Python** — no new services, daemons, or system tools.
+- **Stdlib-only** — `base64`, `email`, `mimetypes`, `uuid` are Python standard library. Zero new packages.
+- **In-memory cache** — no disk writes, no databases, no external state.
+- **Scoped to the proxy lifetime** — the cache lives as long as the proxy process (one claude-ds session). Images uploaded in one session are not persisted across sessions, matching Claude Code's existing behaviour.
+
+---
+
+## Test run (passing)
+
+```
+Ran 19 tests in 1.023s
+
+OK
+```

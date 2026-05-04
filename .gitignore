@@ -8,3 +8,4 @@
 *.bak
 *.broken.*.bak
 *.partial
+__pycache__/
