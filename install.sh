@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO_BASE="https://raw.githubusercontent.com/earchibald/claude-ds/main"
+: "${REPO_BASE:=https://raw.githubusercontent.com/earchibald/claude-ds/main}"
 CLAUDE_DS_URL="$REPO_BASE/claude-ds"
 PROXY_URL="$REPO_BASE/claude-ds-proxy.py"
 
