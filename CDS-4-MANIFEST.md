@@ -141,3 +141,24 @@ proxy silently, causing images to fail even after v0.7.2 was installed to `~/.lo
 sudo cp ~/.local/bin/claude-ds-proxy.py /usr/local/bin/claude-ds-proxy.py
 ```
 New sessions (started via `claude-ds`) are unaffected — `which claude-ds` resolves to `~/.local/bin/claude-ds` (v0.7.2).
+
+---
+
+## Root cause fix — DISABLE_EXPERIMENTAL_BETAS blocking Files API — v0.7.3
+
+**Problem discovered**: `claude-ds` exported `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`
+unconditionally (line 1601). This flag tells Claude Code to skip the Anthropic Files API
+entirely, so image attachments never reached `POST /v1/files`. Claude Code fell back to
+reading image files via the filesystem `Read` tool, completely bypassing the proxy.
+
+**Files changed**: `claude-ds`, `claude-ds-proxy.py`
+
+| Change | Detail |
+|--------|--------|
+| `claude-ds`: unset beta flag when proxy is active | After the proxy starts successfully, `unset CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` so Claude Code uses the Files API. The proxy intercepts uploads and strips the `files-api` beta header before forwarding to DeepSeek. |
+| `claude-ds-proxy.py`: structured header pipeline | Replaced ad-hoc inline header logic with `_build_upstream_headers()`: centralised strip/add tables, per-field `anthropic-beta` filtering, `PROXY_STRIP_HEADERS` and `PROXY_ADD_HEADERS` env-var config, full DEBUG-mode header dump (incoming + outgoing, per-decision). |
+| Version bump | `0.7.2` → `0.7.3` |
+
+**E2E verified**: `POST /v1/files` → proxy caches base64 → `POST /v1/messages` with `file_id`
+→ proxy rewrites to inline base64 → DeepSeek (`deepseek-v4-flash`) responds with visual
+description of the image. All 22 unit tests pass.
