@@ -60,6 +60,7 @@ checklist and tells you exactly what to fix.
 | Claude Code's auto-mode (`--auto` permission classifier) refuses to run on non-Anthropic models | Optional `unlock_auto_mode` flag spoofs the wire-level model id so the gate passes. |
 | `/model default` and tier routing break against single-tier providers | All four tiers (opus / sonnet / haiku / small_fast) are pinned to the configured model by default; per-tier overrides are available. |
 | DeepSeek doesn't honor Anthropic's `thinking.budget_tokens`; Claude Code can't send `reasoning_effort` | A local Python proxy translates between the two — `think hard` → `medium`, `ultrathink` → `high`, etc. — fully configurable, off by `proxy_effort=off`. |
+| Claude Code uploads images via the Anthropic Files API (`POST /v1/files`); DeepSeek doesn't implement it | The proxy intercepts file uploads, caches the image as base64, and rewrites any `file_id` references in outgoing `/v1/messages` to inline base64 that DeepSeek accepts. Fully transparent — attach images in Claude Code exactly as you normally would. |
 | Hard to tell at a glance which terminal is talking to DeepSeek vs. real Anthropic | When run inside tmux, the active pane gets a DeepSeek-themed top border and the window name is prefixed `🐋`. |
 | Config schema changes between releases | Schema-versioned (`_schema=N`); old configs are auto-migrated forward with a `.v<old>.bak` backup. |
 | Hand-edited config got broken | `claude-ds` detects malformed lines on launch, backs up the original to `config.broken.<timestamp>.bak`, and rewrites a clean config preserving every parseable key. |
@@ -661,6 +662,9 @@ this is reliable.
 ├── claude-ds-proxy.py     # Python 3 stdlib HTTP proxy (request rewriter)
 ├── install.sh             # curl | bash installer
 ├── README.md              # this file
+├── tests/
+│   └── test_proxy_images.py  # TDD test suite for image/Files API proxy
+├── CDS-4-MANIFEST.md      # [[CDS-4-MANIFEST]] — change log for CDS-4 image proxy work
 └── docs/
     ├── claude-ds.md       # user-facing guide
     ├── secretref-lib.md   # embedded reusable secretref library docs

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-# claude-ds-proxy — request-rewriting proxy that translates Anthropic
-# `thinking.budget_tokens` into the DeepSeek-shaped reasoning regime on
-# outgoing /v1/messages bodies.
+# claude-ds-proxy — request-rewriting proxy that:
+#   1. Translates Anthropic `thinking.budget_tokens` into DeepSeek's
+#      reasoning regime on outgoing /v1/messages bodies.
+#   2. Mocks the Anthropic Files API (POST /v1/files) so that Claude Code
+#      can upload images; the proxy caches the binary as base64 and rewrites
+#      any `source.type == "file"` blocks in subsequent /v1/messages to
+#      the inline base64 format that DeepSeek expects.
 #
 # Spawned by the `claude-ds` shell wrapper. Stdlib-only (Python 3.8+).
+#
+# ── Reasoning-effort translation ────────────────────────────────────────────
 #
 # DeepSeek's compat shim recognises three reasoning regimes:
 #   "none"   — `thinking` block ABSENT, no `reasoning_effort`. No reasoning.
@@ -27,7 +33,32 @@
 #   Claude extra-high / max      → max  (DeepSeek maximum reasoning)
 #   small_fast tier (always)     → none (strip thinking — saves tokens)
 #
-# Configuration via environment variables (set by the wrapper):
+# ── Image / Files API bridging ──────────────────────────────────────────────
+#
+# When Claude Code attaches an image it:
+#   1. POSTs the binary to POST /v1/files (with anthropic-beta: files-api-*)
+#   2. Receives a `file_id` (e.g. "file_abc123")
+#   3. Sends subsequent /v1/messages with content blocks:
+#        {"type": "image", "source": {"type": "file", "file_id": "file_abc123"}}
+#
+# DeepSeek does not implement the Files API and expects inline base64:
+#        {"type": "image", "source": {"type": "base64",
+#                                     "media_type": "image/png",
+#                                     "data": "<base64>"}}
+#
+# The proxy bridges this by:
+#   • Intercepting POST /v1/files — parsing the multipart body, converting
+#     the file to base64, caching it keyed by a generated file_id, and
+#     returning a mock Anthropic Files API success response.
+#   • Intercepting POST /v1/messages — scanning every content block across
+#     every message for `source.type == "file"`, looking up the cached
+#     base64, and rewriting the source block to the inline base64 format
+#     before forwarding to DeepSeek.
+#   • Stripping `anthropic-beta: files-api-*` from outgoing headers to
+#     DeepSeek so the upstream doesn't reject the request.
+#
+# ── Configuration (env vars set by the wrapper) ─────────────────────────────
+#
 #   UPSTREAM_BASE_URL   required. e.g. https://api.deepseek.com/anthropic
 #   PROXY_BIND          default 127.0.0.1
 #   PROXY_PORT          default 0 (kernel-assigned; actual port printed to
@@ -38,8 +69,12 @@
 #                       `<model>=<spec>` pairs.
 #                       e.g. "claude-opus-4-7=auto;claude-sonnet-4-6=high"
 #   PROXY_DEBUG         "1" to log rewrites/requests to stderr.
+#   VISION_MODEL        model to use when the request contains images (base64
+#                       or file-source blocks).  default: deepseek-chat
+#                       set to "" to disable auto-routing.
 #
-# Spec language (the value side of EFFORT_MAP / EFFORT_DEFAULT):
+# ── Spec language (value side of EFFORT_MAP / EFFORT_DEFAULT) ───────────────
+#
 #   off            no transformation — pass the body through unchanged.
 #                  (empty string is treated the same.)
 #   none           force the "no reasoning" regime (strip thinking block).
@@ -76,14 +111,83 @@
 # through unchanged would cause silent 400s or quiet downgrades. To opt
 # out of the override, set the spec to `off` for that model.
 
+import base64
+import email.parser
 import http.client
 import json
+import mimetypes
 import os
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+
+# ---------- Files API in-memory cache ---------------------------------------
+# Maps file_id → {"data": <base64_str>, "media_type": <str>, "filename": <str>}
+# Protected by _FILE_CACHE_LOCK for thread safety.
+_FILE_CACHE: dict = {}
+_FILE_CACHE_LOCK = threading.Lock()
+
+
+def _store_file(data: bytes, filename: str, media_type: str) -> str:
+    """Cache `data` as base64 and return a generated file_id."""
+    file_id = "file_" + uuid.uuid4().hex[:24]
+    b64 = base64.b64encode(data).decode("ascii")
+    if not media_type:
+        media_type, _ = mimetypes.guess_type(filename) or ("application/octet-stream", None)
+        media_type = media_type or "application/octet-stream"
+    with _FILE_CACHE_LOCK:
+        _FILE_CACHE[file_id] = {
+            "data": b64,
+            "media_type": media_type,
+            "filename": filename,
+            "size": len(data),
+        }
+    return file_id
+
+
+def _lookup_file(file_id: str):
+    """Return cached file dict for file_id, or None."""
+    with _FILE_CACHE_LOCK:
+        return _FILE_CACHE.get(file_id)
+
+
+# ---------- multipart parser ------------------------------------------------
+
+def _parse_multipart(content_type: str, body: bytes):
+    """Parse a multipart/form-data body.
+
+    Returns a list of dicts, each with keys: name, filename, content_type, data.
+    Returns None when the content-type is not multipart/form-data or parsing fails.
+    """
+    ct = content_type or ""
+    if "multipart/form-data" not in ct:
+        return None
+    # email.parser wants a full MIME message; synthesise one.
+    raw = b"Content-Type: " + ct.encode("latin-1") + b"\r\n\r\n" + body
+    try:
+        msg = email.parser.BytesParser().parsebytes(raw)
+    except Exception:
+        return None
+    if not msg.is_multipart():
+        return None
+    parts = []
+    for part in msg.get_payload():
+        cd = part.get("Content-Disposition", "")
+        disp_params = dict(
+            kv.strip().split("=", 1)
+            for kv in cd.split(";")[1:]
+            if "=" in kv
+        )
+        name = disp_params.get("name", "").strip('"')
+        filename = disp_params.get("filename", "").strip('"')
+        pct = part.get_content_type() or ""
+        data = part.get_payload(decode=True) or b""
+        parts.append({"name": name, "filename": filename, "content_type": pct, "data": data})
+    return parts
 
 
 # ---------- spec parsing ----------------------------------------------------
@@ -181,6 +285,7 @@ except ValueError as e:
     sys.exit(2)
 
 DEBUG = os.environ.get("PROXY_DEBUG", "") == "1"
+VISION_MODEL = os.environ.get("VISION_MODEL", "deepseek-chat")
 
 _up = urlsplit(UPSTREAM)
 UP_SCHEME = _up.scheme
@@ -213,6 +318,13 @@ def _should_inject(method: str, path: str) -> bool:
         return False
     bare = path.split("?", 1)[0].rstrip("/")
     return bare.endswith("/v1/messages")
+
+
+def _is_files_upload(method: str, path: str) -> bool:
+    if method != "POST":
+        return False
+    bare = path.split("?", 1)[0].rstrip("/")
+    return bare.endswith("/v1/files")
 
 
 def _bucket_from_thinking(thinking) -> str:
@@ -259,6 +371,57 @@ def _apply_regime(obj: dict, regime: str) -> None:
         obj["reasoning_effort"] = "max"
 
 
+def _rewrite_file_sources(messages: list) -> int:
+    """Scan every content block in `messages` and replace any
+    `source.type == "file"` block with the cached inline base64 source.
+
+    Returns the number of substitutions made.  Mutates `messages` in place.
+    """
+    subs = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            continue
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            src = block.get("source")
+            if not isinstance(src, dict):
+                continue
+            if src.get("type") != "file":
+                continue
+            file_id = src.get("file_id", "")
+            cached = _lookup_file(file_id)
+            if cached is None:
+                _log(f"file_id={file_id!r} not in cache — leaving as-is")
+                continue
+            block["source"] = {
+                "type": "base64",
+                "media_type": cached["media_type"],
+                "data": cached["data"],
+            }
+            subs += 1
+            _log(f"swapped file_id={file_id!r} → base64 ({cached['media_type']}, {cached['size']}B)")
+    return subs
+
+
+def _has_image_content(messages: list) -> bool:
+    """Return True if any content block in `messages` is an image."""
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "image":
+                continue
+            return True
+    return False
+
+
 def _rewrite_body(body: bytes) -> bytes:
     try:
         obj = json.loads(body)
@@ -268,17 +431,33 @@ def _rewrite_body(body: bytes) -> bytes:
     if not isinstance(obj, dict):
         return body
 
+    # Pass 1: rewrite file_id → base64 for any cached uploaded files.
+    messages = obj.get("messages")
+    if isinstance(messages, list):
+        subs = _rewrite_file_sources(messages)
+        if subs:
+            _log(f"rewrote {subs} file-source block(s) in messages")
+
+    # Pass 1b: if the request contains images and VISION_MODEL is set,
+    # transparently swap the model so it routes to a vision-capable backend.
+    if VISION_MODEL and isinstance(messages, list) and _has_image_content(messages):
+        original_model = obj.get("model", "")
+        if original_model != VISION_MODEL:
+            obj["model"] = VISION_MODEL
+            _log(f"image detected — overriding model {original_model!r} → {VISION_MODEL!r}")
+
+    # Pass 2: apply reasoning-effort transformation.
     model = obj.get("model", "") or ""
     resolver = EFFORT_RESOLVERS.get(model, DEFAULT_RESOLVER)
     if resolver is None:
         _log(f"no effort spec applies to model={model!r}; passing through")
-        return body
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8") if messages else body
 
     bucket = _bucket_from_thinking(obj.get("thinking"))
     regime = resolver(bucket)
     if not regime:
         _log(f"spec yielded no regime for model={model!r} bucket={bucket!r}; passing through")
-        return body
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8") if messages else body
 
     incoming_re = obj.get("reasoning_effort", "<absent>")
     _apply_regime(obj, regime)
@@ -312,6 +491,14 @@ class Proxy(BaseHTTPRequestHandler):
                 self.send_error(400, f"failed to read request body: {e}")
                 return
 
+        # ── Files API upload interception ──────────────────────────────────
+        # Handle POST /v1/files: store the file locally, return a mock
+        # Anthropic Files API response, do NOT forward to upstream.
+        if _is_files_upload(self.command, self.path):
+            self._handle_files_upload(body)
+            return
+
+        # ── /v1/messages rewriting ─────────────────────────────────────────
         if _should_inject(self.command, self.path) and body:
             ctype = (self.headers.get("Content-Type") or "").lower()
             if "json" in ctype:
@@ -322,6 +509,10 @@ class Proxy(BaseHTTPRequestHandler):
             if h.lower() in _HOP_BY_HOP:
                 continue
             if h.lower() in ("host", "content-length"):
+                continue
+            # Strip the Files-API beta header — DeepSeek rejects it.
+            if h.lower() == "anthropic-beta" and "files-api" in v.lower():
+                _log(f"stripped header {h}: {v}")
                 continue
             fwd_headers.append((h, v))
         fwd_headers.append(("Host", UP_HOST))
@@ -380,6 +571,69 @@ class Proxy(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _handle_files_upload(self, body: bytes):
+        """Mock POST /v1/files: cache the file as base64, return a fake
+        Anthropic Files API response without forwarding to upstream."""
+        ctype = self.headers.get("Content-Type") or ""
+        filename = "upload"
+        media_type = ""
+        file_data = b""
+
+        if "multipart/form-data" in ctype:
+            parts = _parse_multipart(ctype, body)
+            if parts:
+                # Claude Code sends the file in the first non-text-only part,
+                # usually with name="file".
+                file_part = next(
+                    (p for p in parts if p.get("filename") or p.get("content_type")),
+                    parts[0],
+                )
+                file_data = file_part["data"]
+                filename = file_part["filename"] or file_part["name"] or "upload"
+                media_type = file_part["content_type"] or ""
+            else:
+                # Fallback: treat the whole body as raw file data.
+                file_data = body
+        elif body:
+            # Raw binary (application/octet-stream or similar).
+            file_data = body
+            # Try to detect media type from content-type header.
+            if ";" in ctype:
+                media_type = ctype.split(";")[0].strip()
+            else:
+                media_type = ctype.strip()
+
+        if not file_data:
+            self.send_error(400, "empty file upload")
+            return
+
+        # Guess media type from filename if not already known.
+        if not media_type and filename:
+            guessed, _ = mimetypes.guess_type(filename)
+            media_type = guessed or "application/octet-stream"
+        media_type = media_type or "application/octet-stream"
+
+        file_id = _store_file(file_data, filename, media_type)
+        _log(f"files-api: stored file_id={file_id!r} filename={filename!r} "
+             f"media_type={media_type!r} size={len(file_data)}")
+
+        resp_body = json.dumps({
+            "id": file_id,
+            "type": "file",
+            "filename": filename,
+            "mime_type": media_type,
+            "size": len(file_data),
+            "created_at": int(time.time()),
+            "downloadable": False,
+        }, ensure_ascii=False).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
     do_GET = _handle
     do_POST = _handle
     do_PUT = _handle
@@ -415,6 +669,7 @@ def main():
     print(actual_port, flush=True)
     _log(f"listening on {bind}:{actual_port}, upstream={UPSTREAM}")
     _log(f"per-model resolvers: {sorted(EFFORT_RESOLVERS)}, default-set={DEFAULT_RESOLVER is not None}")
+    _log(f"vision-model routing: {VISION_MODEL!r} (set VISION_MODEL='' to disable)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
