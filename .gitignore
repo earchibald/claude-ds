@@ -1,6 +1,9 @@
 # claude-ds config (auto-created on first run)
 .config/
 
+# Worktrees
+.worktrees/
+
 # Test / temp cruft
 *.bak
 *.broken.*.bak
