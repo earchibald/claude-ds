@@ -162,3 +162,34 @@ reading image files via the filesystem `Read` tool, completely bypassing the pro
 **E2E verified**: `POST /v1/files` → proxy caches base64 → `POST /v1/messages` with `file_id`
 → proxy rewrites to inline base64 → DeepSeek (`deepseek-v4-flash`) responds with visual
 description of the image. All 22 unit tests pass.
+
+---
+
+## Vision normalization — images injected into last user turn — v0.7.4
+
+**Problem discovered**: DeepSeek's Anthropic-compatible endpoint only processes images in
+the **last (most recent) user turn**. Images in any earlier turn are silently ignored. In
+multi-turn conversations (which are the norm with Claude Code), the image would always be
+in an earlier turn, causing "I cannot see the image" responses.
+
+A second issue: when Claude Code uses the `Read` tool to load an image from disk, the image
+ends up inside a `tool_result` block in the last user turn — wrapped, not at the top level.
+DeepSeek ignores images nested in `tool_result` content.
+
+A third issue: the presence of `tool_use` / `tool_result` blocks and the top-level `tools`
+key in conversations caused DeepSeek to fail vision processing even when the image was in
+the correct position.
+
+**Files changed**: `claude-ds-proxy.py`, `tests/test_proxy_images.py`, `claude-ds`
+
+| Change | Detail |
+|--------|--------|
+| `_normalize_for_vision(obj, messages)` added | Unified function that: (1) removes top-level `tools` and `tool_choice` keys; (2) in non-last user turns, extracts images (including those nested in `tool_result`) and replaces them with `[image — in current turn]` placeholder text; (3) in the last user turn, unwraps any `tool_result` content and prepends all collected images from earlier turns; (4) converts assistant `tool_use` blocks to plain text descriptions. Returns count of images collected. |
+| Replaces two obsolete functions | Removed `_hoist_images_to_first_turn()` (wrong direction — hoisted to first, not last) and `_normalize_tool_turns_for_vision()` (merged into unified function). |
+| `_rewrite_body()` Pass 1b updated | Now calls `_normalize_for_vision` instead of the two removed functions. |
+| 8 new unit tests in `TestNormalizeForVision` | Covers: single-turn preserve, multi-turn inject-to-last, tool_result unwrap (last turn), tool_result hoist (earlier turn), multiple images, tools key stripping, no-op on text-only, full Files API pipeline integration. |
+| Updated `test_messages_multi_turn_all_rewritten` | Reflects new normalization: both images from a two-turn conversation now consolidate into the last user turn (not scattered across turns). |
+| Version bump | `0.7.3` → `0.7.4` |
+
+**All 30 unit tests pass.**
+
