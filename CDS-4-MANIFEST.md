@@ -120,3 +120,24 @@ no way to know it should be skipped.
 | Version bump | `0.7.1` → `0.7.2` |
 
 **Verified**: Live test with EFFORT_DEFAULT=auto:high, image upload, DeepSeek vision response confirmed.
+
+---
+
+## Stale proxy detection — (commit 2b99188, PR #8)
+
+**Problem discovered**: An older `claude-ds-proxy.py` (pre-image-proxy) was root-owned
+at `/usr/local/bin/claude-ds-proxy.py`. Sessions started from that location ran the old
+proxy silently, causing images to fail even after v0.7.2 was installed to `~/.local/bin/`.
+
+**Files changed**: `claude-ds`, `install.sh`
+
+| Change | Detail |
+|--------|--------|
+| `claude-ds` startup warning | Compares proxy being launched against `/usr/local/bin/` and `/opt/homebrew/bin/`; warns with exact `sudo cp` fix command if stale version found. |
+| `install.sh` stale sync | After installing, scans for diverged proxy files in system paths and offers to sync with sudo (interactive). Prints exact command on failure. |
+
+**Remaining manual step**: Run once to sync root-owned stale proxy:
+```bash
+sudo cp ~/.local/bin/claude-ds-proxy.py /usr/local/bin/claude-ds-proxy.py
+```
+New sessions (started via `claude-ds`) are unaffected — `which claude-ds` resolves to `~/.local/bin/claude-ds` (v0.7.2).
