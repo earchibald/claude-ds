@@ -394,6 +394,56 @@ class TestProxyIntegration(unittest.TestCase):
 
     # ── Regression: reasoning-effort rewriting still works ────────────────
 
+    def test_vision_model_routing_when_image_present(self):
+        """Model should be overridden to VISION_MODEL when the request has images."""
+        os.environ["VISION_MODEL"] = "deepseek-chat"
+        _reload_proxy()
+        fid = self._upload_and_get_fid()
+        payload = json.dumps({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "file", "file_id": fid}},
+                {"type": "text", "text": "describe it"},
+            ]}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        self.assertEqual(upstream_body["model"], "deepseek-chat")
+
+        os.environ.pop("VISION_MODEL", None)
+        _reload_proxy()
+
+    def test_vision_model_not_swapped_for_text_only(self):
+        """Model must NOT be overridden when the request has no image blocks."""
+        os.environ["VISION_MODEL"] = "deepseek-chat"
+        _reload_proxy()
+        payload = json.dumps({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "user", "content": "hello, text only"}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        self.assertEqual(upstream_body["model"], "deepseek-v4-pro")
+
+        os.environ.pop("VISION_MODEL", None)
+        _reload_proxy()
+
+    # ── Regression: reasoning-effort rewriting still works ────────────────
+
     def test_effort_rewriting_unaffected(self):
         """Effort rewriting should still apply even when no files are involved."""
         os.environ["EFFORT_DEFAULT"] = "auto"

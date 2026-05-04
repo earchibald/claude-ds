@@ -69,6 +69,9 @@
 #                       `<model>=<spec>` pairs.
 #                       e.g. "claude-opus-4-7=auto;claude-sonnet-4-6=high"
 #   PROXY_DEBUG         "1" to log rewrites/requests to stderr.
+#   VISION_MODEL        model to use when the request contains images (base64
+#                       or file-source blocks).  default: deepseek-chat
+#                       set to "" to disable auto-routing.
 #
 # ── Spec language (value side of EFFORT_MAP / EFFORT_DEFAULT) ───────────────
 #
@@ -282,6 +285,7 @@ except ValueError as e:
     sys.exit(2)
 
 DEBUG = os.environ.get("PROXY_DEBUG", "") == "1"
+VISION_MODEL = os.environ.get("VISION_MODEL", "deepseek-chat")
 
 _up = urlsplit(UPSTREAM)
 UP_SCHEME = _up.scheme
@@ -403,6 +407,21 @@ def _rewrite_file_sources(messages: list) -> int:
     return subs
 
 
+def _has_image_content(messages: list) -> bool:
+    """Return True if any content block in `messages` is an image."""
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "image":
+                continue
+            return True
+    return False
+
+
 def _rewrite_body(body: bytes) -> bytes:
     try:
         obj = json.loads(body)
@@ -418,6 +437,14 @@ def _rewrite_body(body: bytes) -> bytes:
         subs = _rewrite_file_sources(messages)
         if subs:
             _log(f"rewrote {subs} file-source block(s) in messages")
+
+    # Pass 1b: if the request contains images and VISION_MODEL is set,
+    # transparently swap the model so it routes to a vision-capable backend.
+    if VISION_MODEL and isinstance(messages, list) and _has_image_content(messages):
+        original_model = obj.get("model", "")
+        if original_model != VISION_MODEL:
+            obj["model"] = VISION_MODEL
+            _log(f"image detected — overriding model {original_model!r} → {VISION_MODEL!r}")
 
     # Pass 2: apply reasoning-effort transformation.
     model = obj.get("model", "") or ""
@@ -642,6 +669,7 @@ def main():
     print(actual_port, flush=True)
     _log(f"listening on {bind}:{actual_port}, upstream={UPSTREAM}")
     _log(f"per-model resolvers: {sorted(EFFORT_RESOLVERS)}, default-set={DEFAULT_RESOLVER is not None}")
+    _log(f"vision-model routing: {VISION_MODEL!r} (set VISION_MODEL='' to disable)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
