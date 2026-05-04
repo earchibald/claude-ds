@@ -1697,19 +1697,22 @@ if [[ "$proxy_needed" -eq 1 ]]; then
   _self="$(_claude_ds_realpath "${BASH_SOURCE[0]}")"
   _self_dir="$(cd -P "$(dirname "$_self")" && pwd)"
   proxy_script="$_self_dir/claude-ds-proxy.py"
-  # Warn once if a stale proxy exists in a system location that differs from
-  # the one we are about to run (e.g. a root-owned /usr/local/bin/claude-ds-proxy.py
-  # left from an old install). It won't affect THIS session but could confuse
-  # another session started from that path.
-  for _stale_check in /usr/local/bin/claude-ds-proxy.py /opt/homebrew/bin/claude-ds-proxy.py; do
-    if [[ "$_stale_check" != "$proxy_script" && -f "$_stale_check" ]]; then
-      if ! diff -q "$proxy_script" "$_stale_check" >/dev/null 2>&1; then
-        _cds_warn "stale proxy detected at $_stale_check (differs from $_self_dir/claude-ds-proxy.py)."
-        _cds_warn "  To fix: sudo cp $proxy_script $_stale_check"
-        _cds_warn "  Or re-run the installer and choose /usr/local/bin."
+  # Warn (once per stale path) if a system-location proxy differs from ours.
+  # Only relevant when image/vision routing might be needed; skip the check
+  # if VISION_MODEL is explicitly disabled.
+  if [[ "${VISION_MODEL:-default}" != "" ]]; then
+    for _stale_check in /usr/local/bin/claude-ds-proxy.py /opt/homebrew/bin/claude-ds-proxy.py; do
+      _stale_flag="${TMPDIR:-/tmp}/.claude-ds-stale-warned-$(echo "$_stale_check" | tr / _)"
+      if [[ "$_stale_check" != "$proxy_script" && -f "$_stale_check" && ! -f "$_stale_flag" ]]; then
+        if ! diff -q "$proxy_script" "$_stale_check" >/dev/null 2>&1; then
+          _cds_warn "stale proxy at $_stale_check differs from $_self_dir/claude-ds-proxy.py."
+          _cds_warn "  Sessions started from $_stale_check won't have image support."
+          _cds_warn "  Fix: sudo cp $proxy_script $_stale_check"
+          touch "$_stale_flag" 2>/dev/null || true
+        fi
       fi
-    fi
-  done
+    done
+  fi
   # Lazy install: if the proxy is missing, try to fetch it from the same
   # upstream the wrapper came from. On any failure, soft-fall-back to
   # proxy-disabled for this session rather than blocking the user.
