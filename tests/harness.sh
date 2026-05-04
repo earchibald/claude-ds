@@ -231,7 +231,11 @@ ck() {
 # tmux send_line. Caller is responsible for sending the actual answers
 # after this returns (it just kicks off the curl|bash).
 start_installer() {
-  send_line "curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/${REF}/install.sh | bash"
+  # Append a cache-buster query string — raw.githubusercontent.com
+  # otherwise serves cached content for ~5min, which makes test feedback
+  # loops painful when iterating on install.sh.
+  local cb="?cb=$(date +%s)-$RANDOM"
+  send_line "curl -fsSL 'https://raw.githubusercontent.com/earchibald/claude-ds/${REF}/install.sh${cb}' | bash"
   if ! wait_for "Where would you like to install" 30; then
     log_fail "installer never printed path-selection prompt"
     mark_fail
@@ -336,8 +340,9 @@ T03() {
 
   walk_onboarding_with_fake_key
 
+  # Sufficient: file landed at the expanded path → ~ expansion worked.
   ck assert_file_exists "$CURRENT_TESTROOT/home/cds-tilde-test/bin/claude-ds"
-  ck assert_pane_lacks  "Custom directory: ~/cds-tilde-test/bin"  # i.e. wasn't shown literally as ~
+  ck assert_pane_contains "Install directory: $CURRENT_TESTROOT/home/cds-tilde-test/bin"
 }
 
 T04() {
@@ -598,13 +603,12 @@ T12() {
   walk_onboarding_with_fake_key
 
   # Verify the installed binary has the version we expect for this branch.
+  # `wait_for "claude-ds "` would match the typed command echo (or earlier
+  # banner output), so settle on wait_for_idle to ensure output flushed.
   send_line "$CURRENT_TESTROOT/home/.local/bin/claude-ds --version | head -1"
-  wait_for "claude-ds " 10
-  if [[ "$REF" == "worktree-cds-2-installer" || "$REF" == "main" ]]; then
-    # Both should ship 0.7.0 once merged; for the branch, definitely 0.7.0.
-    if [[ "$REF" == "worktree-cds-2-installer" ]]; then
-      ck assert_pane_contains "claude-ds 0.7.0"
-    fi
+  wait_for_idle 2
+  if [[ "$REF" == "worktree-cds-2-installer" ]]; then
+    ck assert_pane_contains "claude-ds 0.7.0"
   fi
 }
 
