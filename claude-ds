@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-VERSION="0.6.0"
+VERSION="0.7.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ds"
 CONFIG_FILE="$CONFIG_DIR/config"
 KEYCHAIN_SERVICE="claude-ds"
@@ -45,7 +45,7 @@ CURRENT_SCHEMA=1
 # Where to fetch the proxy script from when it is missing on disk and the
 # user has the proxy enabled. Pinned to the claude-ds-0.6.0 tag; update
 # this when tagging the next release.
-PROXY_DOWNLOAD_URL="https://raw.githubusercontent.com/earchibald/agent-utilities/claude-ds-0.6.0/wrappers/claude-ds/claude-ds-proxy.py"
+PROXY_DOWNLOAD_URL="https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds-proxy.py"
 # Known config keys (used by the validator and the damaged-config repair).
 # Anything in the config file outside this list is preserved with a warning.
 KNOWN_CONFIG_KEYS=(
@@ -72,12 +72,14 @@ print_rule() {
 
 # ---- arg parsing: pull out our flags, forward the rest --------------------
 RESET=0
+SETUP=0
 DOCTOR=0
 PROXY_OVERRIDE=""
 PASSTHROUGH=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reset-password|--rotate-key) RESET=1 ;;
+    --setup)                       SETUP=1 ;;
     --doctor)                      DOCTOR=1 ;;
     --proxy-off)                   PROXY_OVERRIDE="off" ;;
     --proxy-on)                    PROXY_OVERRIDE="auto" ;;
@@ -125,10 +127,15 @@ for arg in ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}; do
 claude-ds — wrapper that runs `claude` against DeepSeek's Anthropic-compatible API.
 
 USAGE
-  claude-ds [--rotate-key | --reset-password] [--proxy-off | --proxy-on[=<spec>]]
+  claude-ds [--rotate-key | --reset-password] [--setup] [--proxy-off | --proxy-on[=<spec>]]
             [--doctor] [--help | -h] [--version | -V] [claude args...]
 
 claude-ds-specific flags
+  --setup              Run first-time onboarding (config creation, secret ref
+                      prompt, liveness check, proxy opt-in) and exit cleanly
+                      without launching claude. If a config already exists,
+                      prints a message and exits 0 — use --rotate-key to
+                      re-configure. Designed for `curl | bash` installers.
   --rotate-key,
   --reset-password    Clear / rotate the stored API key reference. For
                       `system://` references, asks whether to (1) change the
@@ -1280,6 +1287,18 @@ else
     _cds_repair_config_file "$CONFIG_FILE"
   fi
   _cds_migrate_config "$CONFIG_FILE"
+fi
+
+# ---- --setup: run onboarding then exit cleanly (no claude session) ----------
+if [[ "$SETUP" -eq 1 ]]; then
+  if [[ -f "$CONFIG_FILE" ]]; then
+    _cds_log "config already exists at $CONFIG_FILE — already configured."
+    _cds_log "use --rotate-key to re-configure, or just run claude-ds."
+  else
+    _cds_log "setup complete — config written to $CONFIG_FILE"
+    _cds_log "run claude-ds to start a session."
+  fi
+  exit 0
 fi
 
 # ---- load config -----------------------------------------------------------
