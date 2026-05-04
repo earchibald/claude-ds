@@ -440,13 +440,21 @@ def _rewrite_body(body: bytes) -> bytes:
 
     # Pass 1b: if the request contains images and VISION_MODEL is set,
     # transparently swap the model so it routes to a vision-capable backend.
+    routed_to_vision = False
     if VISION_MODEL and isinstance(messages, list) and _has_image_content(messages):
         original_model = obj.get("model", "")
         if original_model != VISION_MODEL:
             obj["model"] = VISION_MODEL
             _log(f"image detected — overriding model {original_model!r} → {VISION_MODEL!r}")
+        routed_to_vision = True
 
     # Pass 2: apply reasoning-effort transformation.
+    # Skip when routed to the vision model — vision backends (deepseek-chat /
+    # deepseek-v4-flash) do not support extended thinking, and injecting a
+    # thinking block causes them to respond with "I cannot see this image."
+    if routed_to_vision:
+        _log("vision route — skipping effort rewrite")
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
     model = obj.get("model", "") or ""
     resolver = EFFORT_RESOLVERS.get(model, DEFAULT_RESOLVER)
     if resolver is None:

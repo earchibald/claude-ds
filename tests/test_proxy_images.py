@@ -442,6 +442,44 @@ class TestProxyIntegration(unittest.TestCase):
         os.environ.pop("VISION_MODEL", None)
         _reload_proxy()
 
+    def test_effort_not_applied_to_vision_route(self):
+        """When routed to vision model, effort rewriting must be skipped.
+
+        deepseek-chat (v4-flash) does not support extended thinking; injecting
+        thinking params causes it to respond 'I cannot see this image.'
+        """
+        os.environ["VISION_MODEL"] = "deepseek-chat"
+        os.environ["EFFORT_DEFAULT"] = "auto:high"
+        _reload_proxy()
+        fid = self._upload_and_get_fid()
+        payload = json.dumps({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "file", "file_id": fid}},
+                {"type": "text", "text": "describe it"},
+            ]}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        # Model must be overridden to vision model
+        self.assertEqual(upstream_body["model"], "deepseek-chat")
+        # Effort rewrite must NOT have added thinking
+        self.assertNotIn("thinking", upstream_body,
+                         "thinking must not be injected for vision routes")
+        self.assertNotIn("reasoning_effort", upstream_body,
+                         "reasoning_effort must not be injected for vision routes")
+
+        os.environ.pop("VISION_MODEL", None)
+        os.environ.pop("EFFORT_DEFAULT", None)
+        _reload_proxy()
+
     # ── Regression: reasoning-effort rewriting still works ────────────────
 
     def test_effort_rewriting_unaffected(self):
