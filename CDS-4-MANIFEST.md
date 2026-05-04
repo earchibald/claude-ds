@@ -94,3 +94,29 @@ transparently routing image requests to `deepseek-chat` (vision-capable).
 |--------|--------|
 | System prompt — image support note added | Explicitly informs the model it CAN process images; that the proxy handles Files API / base64 rewriting and routes to `deepseek-chat`. Overrides incorrect self-assessment from model training. |
 | Version bump | `0.7.0` → `0.7.1` |
+
+---
+
+## Post-merge fix — v0.7.2 (commit b284408, PR #7)
+
+**Problem discovered in production**: When `proxy_effort=auto:high` is configured
+(standard config), Pass 2 of `_rewrite_body` injected `thinking:{type:"enabled"}`
+into every request. After Pass 1b had already routed the request to `deepseek-chat`
+for vision, Pass 2 would still run and add thinking parameters. `deepseek-chat`
+(deepseek-v4-flash) does not support extended thinking simultaneously with image
+inputs — it responded "I cannot see this image" / "The image isn't rendering on
+my end" instead of processing the image.
+
+**Root cause**: `routed_to_vision` flag was not set, so the effort-rewrite pass had
+no way to know it should be skipped.
+
+**Files changed**: `claude-ds-proxy.py`, `tests/test_proxy_images.py`, `claude-ds`
+
+| Change | Detail |
+|--------|--------|
+| `routed_to_vision` flag in `_rewrite_body` | Set to `True` after Pass 1b overrides the model to `VISION_MODEL`. |
+| Early return before Pass 2 | `if routed_to_vision: return body` — prevents thinking injection for vision routes. |
+| Regression test added | `test_effort_not_applied_to_vision_route`: EFFORT_DEFAULT=auto:high + image request → upstream body must NOT contain `thinking`. |
+| Version bump | `0.7.1` → `0.7.2` |
+
+**Verified**: Live test with EFFORT_DEFAULT=auto:high, image upload, DeepSeek vision response confirmed.
