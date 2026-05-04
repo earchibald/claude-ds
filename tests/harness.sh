@@ -6,7 +6,10 @@ set -uo pipefail
 
 # ---- args ------------------------------------------------------------------
 
-REF="main"
+# Default ref: the current git branch. This makes `./tests/harness.sh`
+# Just Work from a feature branch where install.sh isn't yet on main.
+# Override with --ref if you're testing a specific tag or branch.
+REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 INCLUDE_SUDO=0
 SCENARIOS=()
 
@@ -34,6 +37,21 @@ done
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux not installed; aborting." >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "curl not installed; aborting." >&2; exit 1; }
+
+# Pre-flight: confirm install.sh exists at the chosen ref. raw.githubusercontent.com
+# returns 404 for unknown branches/files; without this check we'd fail every
+# scenario with the misleading "installer never printed path-selection prompt".
+PRECHECK_URL="https://raw.githubusercontent.com/earchibald/claude-ds/${REF}/install.sh"
+PRECHECK_CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$PRECHECK_URL" 2>&1) || PRECHECK_CODE="000"
+case "$PRECHECK_CODE" in
+  2*) ;;
+  *)
+    echo "error: install.sh not reachable at ref '${REF}' (HTTP ${PRECHECK_CODE})" >&2
+    echo "       URL: ${PRECHECK_URL}" >&2
+    echo "       fix: pass --ref <branch>, or push the current branch to GitHub." >&2
+    exit 1
+    ;;
+esac
 
 # ---- harness state ---------------------------------------------------------
 
