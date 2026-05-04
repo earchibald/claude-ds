@@ -1214,8 +1214,8 @@ _cds_prompt_proxy_choice() {
 _cds_prompt_auto_mode() {
   {
     echo
-    echo "Auto-mode unlock (optional)"
-    echo "───────────────────────────"
+    echo "Auto-mode unlock (recommended)"
+    echo "─────────────────────────────────"
     echo "Claude Code's 'auto mode' — the permission classifier that auto-approves"
     echo "routine tool calls — is gated on the model ID matching a known Claude"
     echo "model name (e.g. claude-opus-4-7). Since claude-ds runs against DeepSeek,"
@@ -1225,16 +1225,15 @@ _cds_prompt_auto_mode() {
     echo "passes. The /model picker still shows real DeepSeek labels. This does"
     echo "NOT change which model serves requests — it only satisfies the classifier."
     echo
-    echo "Whether this works depends on your provider: most Anthropic-compat shims"
-    echo "route by URL+token and ignore the model name in the request body. If"
-    echo "DeepSeek rejects the spoofed ID, leave it off and run without auto mode."
+    echo "Enable this for the closest experience to native Claude Code — auto mode"
+    echo "is the recommended choice for most users."
     echo
   } >&2
-  printf "Enable auto-mode unlock? [y/N, default n]: " >&2
+  printf "Enable auto-mode unlock? [Y/n, default y]: " >&2
   local choice; IFS= read -e -r choice
   case "${choice,,}" in
-    y|yes) printf '1' ;;
-    *)     printf '' ;;
+    n|no) printf '' ;;
+    *)    printf '1' ;;
   esac
 }
 
@@ -1334,8 +1333,30 @@ fi
 # ---- --setup: run onboarding then exit cleanly (no claude session) ----------
 if [[ "$SETUP" -eq 1 ]]; then
   if [[ -f "$CONFIG_FILE" ]]; then
-    _cds_log "config already exists at $CONFIG_FILE — already configured."
-    _cds_log "use --rotate-key to re-configure, or just run claude-ds."
+    # Check whether the config already has auto-mode set (which indicates
+    # this version's onboarding was already completed).
+    has_auto=$(grep -c '^unlock_auto_mode=' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ "$has_auto" -gt 0 ]]; then
+      _cds_log "config at $CONFIG_FILE is up to date."
+    else
+      _cds_log "config at $CONFIG_FILE is from an older version — missing auto-mode and proxy settings."
+      printf "Re-run onboarding to configure new options? [Y/n]: " >&2
+      local rerun; IFS= read -e -r rerun
+      case "${rerun,,}" in
+        n|no) _cds_log "keeping existing config unchanged." ;;
+        *)
+          existing_ref=$(awk -F= '$1=="api_key_ref"{sub(/^api_key_ref=/,""); print; exit}' "$CONFIG_FILE" || true)
+          if [[ -z "$existing_ref" ]]; then
+            _cds_warn "no api_key_ref found in config — use --rotate-key to set one."
+          else
+            proxy_choice=$(_cds_prompt_proxy_choice)
+            auto_mode=$(_cds_prompt_auto_mode)
+            write_config "$existing_ref" "$proxy_choice" "$auto_mode"
+            _cds_log "config updated at $CONFIG_FILE"
+          fi
+          ;;
+      esac
+    fi
   else
     _cds_log "setup complete — config written to $CONFIG_FILE"
     _cds_log "run claude-ds to start a session."
