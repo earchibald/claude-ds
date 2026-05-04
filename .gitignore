@@ -1,0 +1,7 @@
+# claude-ds config (auto-created on first run)
+.config/
+
+# Test / temp cruft
+*.bak
+*.broken.*.bak
+*.partial
