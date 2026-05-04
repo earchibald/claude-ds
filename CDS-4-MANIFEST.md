@@ -3,6 +3,8 @@
 Tracks every change made to the system as part of
 [CDS-4 — proxy: handle images and configure claude to use proxy for images POST](README.md).
 
+See also: [[deepseek-vision-research]] — full research findings, attempt log, and DeepSeek vision API constraints.
+
 ---
 
 ## Files modified
