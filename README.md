@@ -70,23 +70,24 @@ checklist and tells you exactly what to fix.
 ## Quickstart
 
 ```bash
-# 1. Install (see Installation below for alternatives).
-mkdir -p ~/.local/bin
-curl -fL https://raw.githubusercontent.com/earchibald/agent-utilities/main/wrappers/claude-ds/claude-ds         -o ~/.local/bin/claude-ds
-curl -fL https://raw.githubusercontent.com/earchibald/agent-utilities/main/wrappers/claude-ds/claude-ds-proxy.py -o ~/.local/bin/claude-ds-proxy.py
-chmod +x ~/.local/bin/claude-ds
+# 1. Install and configure in one command.
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 
-# 2. First run interactively walks you through:
-#    - secret reference (paste a key directly, or use `system://`,
-#      `op://`, `infisical://` — see Secret references below)
-#    - liveness check against DeepSeek (catches typo'd keys before you save)
-#    - reasoning-effort proxy opt-in (default: off; most users don't need it)
-claude-ds
-
-# 3. That's it. Useful follow-ups:
+# 2. That's it. Useful follow-ups:
 claude-ds --doctor       # end-to-end checklist if anything seems wrong
 claude-ds --rotate-key   # rotate the stored API key (alias of --reset-password)
 ```
+
+The installer asks where to put the binary (`~/.local/bin` by default), uses
+`sudo` only when needed, handles existing installs gracefully, then walks you
+through first-time configuration interactively:
+
+- secret reference (paste a key directly, or use `system://`, `op://`,
+  `infisical://` — see [Secret references](#secret-references) below)
+- liveness check against DeepSeek (catches typo'd keys before you save)
+- reasoning-effort proxy opt-in (default: off; most users don't need it)
+
+See [Installation](#installation) for alternatives (manual curl, dev checkout).
 
 > 💡 **The proxy script doesn't need `chmod +x`** — the wrapper invokes it
 > as `python3 claude-ds-proxy.py`. Only `claude-ds` itself must be
@@ -121,24 +122,32 @@ claude-ds --rotate-key   # rotate the stored API key (alias of --reset-password)
 | `infisical` CLI | only for `infisical://` secret references |
 | `secret-tool` (Linux, libsecret) | only for `system://` references on Linux. macOS uses the built-in `security` command. |
 
-### Manual install
+### curl | bash (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+```
+
+Interactive: choose install directory, handles sudo, runs first-time setup.
+
+### Manual curl
 
 ```bash
 mkdir -p ~/.local/bin
-cp wrappers/claude-ds/claude-ds          ~/.local/bin/claude-ds
-cp wrappers/claude-ds/claude-ds-proxy.py ~/.local/bin/claude-ds-proxy.py
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds         -o ~/.local/bin/claude-ds
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds-proxy.py -o ~/.local/bin/claude-ds-proxy.py
 chmod +x ~/.local/bin/claude-ds
 # Both files must share a directory — the wrapper resolves
 # `claude-ds-proxy.py` from the directory of its own real path.
 ```
 
-Make sure `~/.local/bin` is on `$PATH`.
+Make sure `~/.local/bin` is on `$PATH`, then run `claude-ds --setup` to configure.
 
 ### From this repo (development checkout)
 
 ```bash
-git clone https://github.com/earchibald/agent-utilities.git
-ln -s "$PWD/agent-utilities/wrappers/claude-ds/claude-ds" ~/.local/bin/claude-ds
+git clone https://github.com/earchibald/claude-ds.git
+ln -s "$PWD/claude-ds/claude-ds" ~/.local/bin/claude-ds
 # The proxy does NOT need to be symlinked separately — the wrapper
 # canonicalises its own path with a portable readlink loop, so
 # `dirname(realpath(claude-ds))` lands in the source tree where the proxy

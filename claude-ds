@@ -43,9 +43,8 @@ DEFAULT_MODEL="deepseek-v4-pro"
 # written before any mutation.
 CURRENT_SCHEMA=1
 # Where to fetch the proxy script from when it is missing on disk and the
-# user has the proxy enabled. Pinned to the claude-ds-0.6.0 tag; update
-# this when tagging the next release.
-PROXY_DOWNLOAD_URL="https://raw.githubusercontent.com/earchibald/agent-utilities/claude-ds-0.6.0/wrappers/claude-ds/claude-ds-proxy.py"
+# user has the proxy enabled. Update to a pinned tag when tagging releases.
+PROXY_DOWNLOAD_URL="https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds-proxy.py"
 # Known config keys (used by the validator and the damaged-config repair).
 # Anything in the config file outside this list is preserved with a warning.
 KNOWN_CONFIG_KEYS=(
@@ -73,12 +72,14 @@ print_rule() {
 # ---- arg parsing: pull out our flags, forward the rest --------------------
 RESET=0
 DOCTOR=0
+SETUP=0
 PROXY_OVERRIDE=""
 PASSTHROUGH=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reset-password|--rotate-key) RESET=1 ;;
     --doctor)                      DOCTOR=1 ;;
+    --setup)                       SETUP=1 ;;
     --proxy-off)                   PROXY_OVERRIDE="off" ;;
     --proxy-on)                    PROXY_OVERRIDE="auto" ;;
     --proxy-on=*)                  PROXY_OVERRIDE="${1#--proxy-on=}" ;;
@@ -126,7 +127,7 @@ claude-ds — wrapper that runs `claude` against DeepSeek's Anthropic-compatible
 
 USAGE
   claude-ds [--rotate-key | --reset-password] [--proxy-off | --proxy-on[=<spec>]]
-            [--doctor] [--help | -h] [--version | -V] [claude args...]
+            [--setup] [--doctor] [--help | -h] [--version | -V] [claude args...]
 
 claude-ds-specific flags
   --rotate-key,
@@ -138,6 +139,10 @@ claude-ds-specific flags
                       forgets the local reference (upstream stores are
                       never touched). The new key is liveness-checked
                       against the configured base_url before saving.
+  --setup             Run first-time onboarding (secret ref prompt, liveness
+                      check, proxy opt-in, config write) then exit without
+                      starting a claude session. If config already exists,
+                      prints its location and exits. Used by install.sh.
   --proxy-off         Disable the reasoning-effort proxy for this session.
                       Overrides both config file and env var.
   --proxy-on[=<spec>] Enable the reasoning-effort proxy for this session.
@@ -1280,7 +1285,15 @@ else
     _cds_repair_config_file "$CONFIG_FILE"
   fi
   _cds_migrate_config "$CONFIG_FILE"
+  if [[ "$SETUP" -eq 1 ]]; then
+    _cds_log "already configured: $CONFIG_FILE"
+    _cds_log "Run --rotate-key to change the API key, or --doctor to verify setup."
+    exit 0
+  fi
 fi
+
+# --setup: onboarding ran (or handled above); exit before calling claude.
+[[ "$SETUP" -eq 1 ]] && exit 0
 
 # ---- load config -----------------------------------------------------------
 api_key_ref=""; model=""; base_url=""
