@@ -113,7 +113,14 @@ _say "Install directory: $(_bold "$INSTALL_DIR")"
 
 if [[ ! -d "$INSTALL_DIR" ]]; then
   if _confirm "Directory does not exist. Create it?" y; then
-    if [[ -w "$(dirname "$INSTALL_DIR")" ]]; then
+    # Walk up to find the deepest existing ancestor — `[[ -w X ]]` is false
+    # for non-existent paths, so checking just dirname doesn't tell us
+    # whether we'd actually need sudo.
+    ancestor="$(dirname "$INSTALL_DIR")"
+    while [[ ! -d "$ancestor" ]]; do
+      ancestor="$(dirname "$ancestor")"
+    done
+    if [[ -w "$ancestor" ]]; then
       mkdir -p "$INSTALL_DIR"
     else
       sudo mkdir -p "$INSTALL_DIR"
