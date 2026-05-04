@@ -4,6 +4,10 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 #
+# To install from a non-default branch / tag (development, testing):
+#   curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/<ref>/install.sh \
+#     | CDS_INSTALL_REF=<ref> bash
+#
 # After downloading and installing the binary, runs `claude-ds --setup` to
 # walk through first-time configuration interactively.  No `claude` session
 # is started.
@@ -13,7 +17,11 @@
 
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/earchibald/claude-ds/main"
+# Branch / tag to fetch claude-ds + claude-ds-proxy.py from. Override with
+# CDS_INSTALL_REF=<branch-or-tag> in the environment to install from a
+# development branch — useful for testing the installer itself end-to-end.
+CDS_INSTALL_REF="${CDS_INSTALL_REF:-main}"
+REPO_RAW="https://raw.githubusercontent.com/earchibald/claude-ds/${CDS_INSTALL_REF}"
 BINARY_NAME="claude-ds"
 PROXY_NAME="claude-ds-proxy.py"
 
@@ -47,6 +55,10 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Downloads claude-ds and claude-ds-proxy.py from GitHub,"
 echo "  installs them to your chosen directory, then runs first-time"
 echo "  configuration (API key, proxy opt-in)."
+if [[ "$CDS_INSTALL_REF" != "main" ]]; then
+  echo
+  echo "  $(_yellow "Source ref:") $CDS_INSTALL_REF (override via CDS_INSTALL_REF)"
+fi
 echo
 
 # ---- path selection ---------------------------------------------------------
