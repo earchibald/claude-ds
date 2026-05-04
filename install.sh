@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+if [[ -z "${REPO_BASE:-}" ]] && git rev-parse --git-dir >/dev/null 2>&1; then
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  REPO_BASE="https://raw.githubusercontent.com/earchibald/claude-ds/${branch}"
+fi
 : "${REPO_BASE:=https://raw.githubusercontent.com/earchibald/claude-ds/main}"
 CLAUDE_DS_URL="$REPO_BASE/claude-ds"
 PROXY_URL="$REPO_BASE/claude-ds-proxy.py"
