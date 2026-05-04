@@ -17,6 +17,19 @@
 
 set -euo pipefail
 
+# When invoked via `curl | bash`, stdin is the curl pipe — bash reads the
+# script body from it, and any naive `read` would consume the script's
+# own lines as user input. We sidestep that by reading every interactive
+# prompt directly from /dev/tty (the controlling terminal). If there's no
+# tty (CI, non-interactive shell), interactive install isn't possible and
+# we abort with a clear error.
+TTY_IN=/dev/tty
+if [[ ! -r "$TTY_IN" ]]; then
+  echo "error: install.sh needs an interactive terminal." >&2
+  echo "       run it from a real shell, not from a non-interactive context." >&2
+  exit 1
+fi
+
 # Branch / tag to fetch claude-ds + claude-ds-proxy.py from. Override with
 # CDS_INSTALL_REF=<branch-or-tag> in the environment to install from a
 # development branch — useful for testing the installer itself end-to-end.
@@ -42,7 +55,7 @@ _confirm() {
   local yn_hint
   if [[ "$default" == "y" ]]; then yn_hint="[Y/n]"; else yn_hint="[y/N]"; fi
   printf "  %s %s: " "$prompt" "$yn_hint" >&2
-  local ans; IFS= read -r ans
+  local ans; IFS= read -r ans < "$TTY_IN"
   ans="${ans:-$default}"
   case "${ans,,}" in y|yes) return 0 ;; *) return 1 ;; esac
 }
@@ -72,7 +85,7 @@ echo "  [2] /usr/local/bin  (system-wide, may need sudo)"
 echo "  [3] Custom path"
 echo
 printf "  Choice [1/2/3, default 1]: "
-read -r path_choice
+read -r path_choice < "$TTY_IN"
 path_choice="${path_choice:-1}"
 
 case "$path_choice" in
@@ -84,7 +97,7 @@ case "$path_choice" in
     ;;
   3)
     printf "  Custom directory: "
-    read -r INSTALL_DIR
+    read -r INSTALL_DIR < "$TTY_IN"
     INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
     [[ -n "$INSTALL_DIR" ]] || _die "empty path, aborting."
     ;;
@@ -157,7 +170,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
   echo "    [b] Back it up and re-run onboarding"
   echo "    [o] Overwrite without backup"
   printf "  Choice [k/b/o, default k]: "
-  read -r cfg_choice
+  read -r cfg_choice < "$TTY_IN"
   cfg_choice="${cfg_choice:-k}"
   case "${cfg_choice,,}" in
     k|keep)
@@ -250,4 +263,6 @@ echo "$(_bold "First-time setup")"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 
-exec "$BINARY_DST" --setup
+# Redirect stdin to /dev/tty so claude-ds inherits the controlling terminal
+# rather than the (now-closed) curl pipe we were started under.
+exec "$BINARY_DST" --setup < "$TTY_IN"
