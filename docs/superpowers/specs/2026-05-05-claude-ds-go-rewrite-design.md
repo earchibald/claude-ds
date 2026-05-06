@@ -253,6 +253,30 @@ The proxy's `WIRE_MODEL_MAP` rewrites these spoofed IDs back to real DeepSeek
 model IDs in the request body before forwarding upstream (so DeepSeek's compat
 shim doesn't silently alias unknown claude-* IDs to flash).
 
+`DEFAULT_UPSTREAM_MODEL` is set to `resolved_model` (the configured upstream
+model) and passed to the proxy. It serves as a **catch-all**: any `claude-*` ID
+that is not found in `WIRE_MODEL_MAP` — new model generations, internal code
+paths, future spoofed IDs — is silently rewritten to `DEFAULT_UPSTREAM_MODEL`
+instead of being forwarded as-is (which would cause DeepSeek to alias it to
+flash). This is defense-in-depth on top of the explicit WIRE_MODEL_MAP entries.
+
+### Proxy-disabled flash-downgrade warning
+
+When `unlock_auto_mode=1` and the proxy cannot start (python3 missing, curl
+missing, download failure, or start timeout), **all three** disable paths must
+print a prominent warning before continuing:
+
+```
+⚠ UNLOCK_AUTO_MODE IS ON — spoofed claude-* model IDs will NOT be rewritten.
+⚠ DeepSeek will silently alias them to deepseek-flash (cheapest model).
+⚠ Fix: ensure python3 is installed and claude-ds-proxy.py is reachable.
+```
+
+In the Go rewrite this is a `warnFlashDowngrade()` helper called from every
+path that sets `proxyNeeded = false` after the proxy-start attempt. A 2-second
+sleep after the warning ensures the user reads it before the TUI clears the
+screen.
+
 ## Reasoning-effort proxy
 
 ### Lifecycle
@@ -268,11 +292,15 @@ and `ANTHROPIC_BASE_URL` points directly at DeepSeek.
 ### Request routing
 
 ```
-POST /v1/messages (JSON)
+POST /v1/messages
   → header pipeline
-  → parse JSON body
+  → parse JSON body (rewriting is unconditional — no Content-Type gate needed;
+    /v1/messages is always JSON per the Anthropic API spec; _rewrite_body
+    safely passes through non-JSON bodies)
   → file_id → base64 rewrite (cached uploads)
-  → wire-model map rewrite
+  → wire-model map rewrite (explicit WIRE_MODEL_MAP entries)
+  → wire-model catch-all: if model still starts with "claude-" and
+    DEFAULT_UPSTREAM_MODEL is set, rewrite to DEFAULT_UPSTREAM_MODEL
   → image detection → if yes: vision routing, skip effort rewrite
   → effort spec resolution → apply regime
   → re-serialize, forward upstream, stream response back
