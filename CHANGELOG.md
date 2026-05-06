@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-05
+
+### Changed
+
+- **Installer auto-resolves latest GitHub Release.** The installer now queries
+  the GitHub Releases API for the latest tag before downloading, so the REAME
+  no longer pins a version number that would rot on every release. The
+  `CDS_INSTALL_REF` env var still overrides to any tag, branch, or SHA.
+- **Installer compares installed version before prompting.** When a
+  `claude-ds` binary already exists at the install path, the installer
+  extracts its version and compares it against the resolved release tag.
+  Default is N for same or later versions already installed, Y for upgrades.
+
 ### Added
 
-- GitHub release CI workflow.
+- GitHub release CI workflow (merged from CDS-7). Tag pushes trigger automatic
+  release creation with notes extracted from CHANGELOG.md.
+- CHANGELOG.md following [Keep a Changelog](https://keepachangelog.com).
 
 ## [0.8.0] — 2026-05-05
 
@@ -174,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing config with automatic schema migration.
 - Tmux pane branding.
 
-[Unreleased]: https://github.com/earchibald/claude-ds/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/earchibald/claude-ds/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/earchibald/claude-ds/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/earchibald/claude-ds/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/earchibald/claude-ds/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/earchibald/claude-ds/compare/v0.7.2...v0.7.3

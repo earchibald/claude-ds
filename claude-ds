@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-VERSION="0.8.0"
+VERSION="0.8.1"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ds"
 CONFIG_FILE="$CONFIG_DIR/config"
 KEYCHAIN_SERVICE="claude-ds"
