@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Installer auto-resolves latest GitHub Release.** The installer now queries
   the GitHub Releases API for the latest tag before downloading, so the REAME
-  no longer pins a version number that would rot on every release. The
+  README no longer pins a version number that would rot on every release. The
   `CDS_INSTALL_REF` env var still overrides to any tag, branch, or SHA.
 - **Installer compares installed version before prompting.** When a
   `claude-ds` binary already exists at the install path, the installer
@@ -28,17 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] — 2026-05-05
 
+### Fixed
+
+- **Critical: `unlock_auto_mode=1` was routing requests to DeepSeek's cheapest
+  model.** When auto-mode was enabled, `claude-ds` spoofed Claude-canonical
+  model IDs (`claude-opus-4-7`, `claude-sonnet-4-6`, etc.) to satisfy Claude
+  Code's permission-classifier regex gate. DeepSeek does not recognise these
+  IDs — and instead of rejecting them, it **silently aliases unknown model
+  IDs to `deepseek-flash`**, its cheapest and least capable model. Every
+  request was being downgraded. Tool calls, reasoning, complex prompts — all
+  hitting flash instead of the configured tier. This was invisible to the
+  user: no error, no warning, just worse results.
+
 ### Added
 
-- **WIRE_MODEL_MAP — model ID rewrite on the wire.** When `unlock_auto_mode=1`,
-  Claude-canonical model IDs (`claude-opus-4-7`, `claude-sonnet-4-6`, etc.) are
-  spoofed to satisfy Claude Code's permission classifier. DeepSeek silently
-  aliases unknown `claude-*` IDs to its cheapest model, downgrading the
-  user's selected tier. The new `WIRE_MODEL_MAP` (semicolon-separated
-  `from=to` pairs) rewrites the request body's `model` field back to the real
-  DeepSeek ID before forwarding, preventing the silent downgrade. Per-tier
-  config keys `model_opus`, `model_sonnet`, `model_haiku`, and
-  `model_small_fast` feed the map automatically.
+- **WIRE_MODEL_MAP — model ID rewrite on the wire.** The fix: a semicolon-
+  separated `from=to` map (`claude-opus-4-7=deepseek-v4-pro;...`) that
+  rewrites the request body's `model` field back to the real DeepSeek ID
+  before forwarding upstream. The spoofed ID still satisfies Claude Code's
+  auto-mode gate; the rewrite undoes the spoof at the wire level so DeepSeek
+  sees the model the user actually configured. Per-tier config keys
+  `model_opus`, `model_sonnet`, `model_haiku`, and `model_small_fast` feed
+  the map automatically.
 
 ### Changed
 
