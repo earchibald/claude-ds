@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.2] — 2026-05-06
 
+### Added
+
+- **OTLP observability spec (CDS-25).** Recommendations doc at
+  `docs/superpowers/specs/2026-05-06-claude-ds-otlp-observability.md` covering
+  metric inventory, span graph, attribute schema, redaction rules, failure-mode
+  → signal map, and SigNoz views — implementation phases (CDS-12 / CDS-15 /
+  CDS-23) quote it verbatim. Verified SigNoz reachability at
+  `http://signoz.local:30318` (OTLP/HTTP) and `http://signoz.local:30080` (API).
+- **Observability section in the Go-rewrite design spec.** New "OpenTelemetry /
+  OTLP" section in `2026-05-05-claude-ds-go-rewrite-design.md` covering
+  dependency vendoring, the 0..N endpoint config keys, provider lifecycle (1 s
+  graceful shutdown), proxy instrumentation entry points, redaction posture, and
+  the new `--doctor` exporter-reachability check.
+
 ### Fixed
 
 - **Hardened proxy against silent flash downgrade (CDS-6).** Follow-up to the
