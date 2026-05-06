@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-05-06
+
+### Fixed
+
+- **Hardened proxy against silent flash downgrade (CDS-6).** Follow-up to the
+  v0.8.0 fix. When `unlock_auto_mode=1` was set but the proxy failed to start
+  (or was bypassed), spoofed `claude-*` model IDs flowed straight to DeepSeek,
+  which silently aliased them to `deepseek-flash` — the same downgrade path
+  v0.8.0 was meant to close. Three reinforcing fixes:
+  1. **Catch-all `WIRE_MODEL_MAP` fallback** for any unrecognised `claude-*`
+     model ID, so the rewrite no longer depends on per-tier keys being present.
+  2. **Prominent flash-downgrade warnings** on every code path that disables
+     the proxy or skips the rewrite, with a 2-second pause so the warning is
+     not lost in scrollback.
+  3. **Unconditional `/v1/messages` body rewriting** — removed the
+     `Content-Type` gate that previously let unusual content types skip the
+     model-ID rewrite entirely.
+
 ## [0.8.1] — 2026-05-05
 
 ### Changed
@@ -200,7 +218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Self-healing config with automatic schema migration.
 - Tmux pane branding.
 
-[Unreleased]: https://github.com/earchibald/claude-ds/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/earchibald/claude-ds/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/earchibald/claude-ds/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/earchibald/claude-ds/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/earchibald/claude-ds/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/earchibald/claude-ds/compare/v0.7.3...v0.7.4
