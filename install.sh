@@ -156,14 +156,64 @@ dest_bin="$install_dir/claude-ds"
 dest_proxy="$install_dir/claude-ds-proxy.py"
 overwrite_bin=1
 
+# Derive the version being installed from the resolved ref.
+# REPO_BASE ends with the ref (e.g. .../v0.8.0, .../main).
+install_ref="${REPO_BASE##*/}"
+new_ver=""
+if [[ "$install_ref" =~ ^v[0-9] ]]; then
+  new_ver="${install_ref#v}"
+fi
+
+# Extract the installed version if present.
+installed_ver=""
 if [[ -f "$dest_bin" ]]; then
+  installed_ver=$(grep '^VERSION=' "$dest_bin" 2>/dev/null | head -1 | sed 's/VERSION="\([^"]*\)".*/\1/')
+fi
+
+if [[ -n "$installed_ver" ]] && [[ -n "$new_ver" ]]; then
   echo
-  info "claude-ds already exists at $dest_bin"
+  latest=$(printf '%s\n%s\n' "$installed_ver" "$new_ver" | sort -V | tail -1)
+
+  if [[ "$installed_ver" == "$new_ver" ]]; then
+    info "claude-ds $installed_ver already installed (same version)."
+    answer=$(prompt "Reinstall? [y/N, default n]:")
+    case "${answer:-n}" in
+      y|Y|yes|YES) overwrite_bin=1 ;;
+      *)           overwrite_bin=0
+                   info "keeping $installed_ver — install skipped."
+                   ;;
+    esac
+  elif [[ "$latest" == "$installed_ver" ]]; then
+    info "claude-ds $installed_ver is installed — newer than $new_ver."
+    answer=$(prompt "Downgrade to $new_ver? [y/N, default n]:")
+    case "${answer:-n}" in
+      y|Y|yes|YES) overwrite_bin=1 ;;
+      *)           overwrite_bin=0
+                   info "keeping $installed_ver — install skipped."
+                   ;;
+    esac
+  else
+    info "claude-ds $installed_ver → $new_ver (upgrade available)."
+    answer=$(prompt "Upgrade? [Y/n, default y]:")
+    case "${answer:-y}" in
+      y|Y|yes|YES) overwrite_bin=1 ;;
+      *)           overwrite_bin=0
+                   info "keeping $installed_ver — upgrade skipped."
+                   ;;
+    esac
+  fi
+elif [[ -f "$dest_bin" ]]; then
+  echo
+  if [[ -n "$installed_ver" ]]; then
+    info "claude-ds $installed_ver already exists at $dest_bin"
+  else
+    info "claude-ds already exists at $dest_bin"
+  fi
   answer=$(prompt "Overwrite? [Y/n, default y]:")
   case "${answer:-y}" in
     y|Y|yes|YES) overwrite_bin=1 ;;
     *)           overwrite_bin=0
-                 info "keeping existing binary — install skipped for $dest_bin"
+                 info "keeping existing binary — install skipped."
                  ;;
   esac
 fi
