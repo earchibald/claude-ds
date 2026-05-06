@@ -25,7 +25,7 @@ func TestBuildUpstreamHeaders_HopByHopStripped(t *testing.T) {
 		"Proxy-Authorization": {"Basic abc"},
 		"X-Pass":              {"yes"},
 	}
-	out := BuildUpstreamHeaders(in, "api.example.com", 0, HeaderOpts{})
+	out, _ := BuildUpstreamHeaders(in, "api.example.com", 0, HeaderOpts{})
 
 	for _, h := range []string{
 		"Connection", "Keep-Alive", "Transfer-Encoding", "Te", "Trailer",
@@ -44,7 +44,7 @@ func TestBuildUpstreamHeaders_HostAlwaysReplaced(t *testing.T) {
 	in := http.Header{
 		"Host": {"localhost:8000"},
 	}
-	out := BuildUpstreamHeaders(in, "api.anthropic.com", 0, HeaderOpts{})
+	out, _ := BuildUpstreamHeaders(in, "api.anthropic.com", 0, HeaderOpts{})
 	if got := out.Get("Host"); got != "api.anthropic.com" {
 		t.Errorf("Host = %q, want api.anthropic.com", got)
 	}
@@ -54,13 +54,13 @@ func TestBuildUpstreamHeaders_ContentLengthRecomputed(t *testing.T) {
 	in := http.Header{
 		"Content-Length": {"99"},
 	}
-	out := BuildUpstreamHeaders(in, "api.example.com", 42, HeaderOpts{})
+	out, _ := BuildUpstreamHeaders(in, "api.example.com", 42, HeaderOpts{})
 	if got := out.Get("Content-Length"); got != "42" {
 		t.Errorf("Content-Length = %q, want 42", got)
 	}
 
 	// bodyLen == 0 => no Content-Length injection.
-	out2 := BuildUpstreamHeaders(in, "api.example.com", 0, HeaderOpts{})
+	out2, _ := BuildUpstreamHeaders(in, "api.example.com", 0, HeaderOpts{})
 	if got := out2.Get("Content-Length"); got != "" {
 		t.Errorf("Content-Length should be absent for bodyLen=0, got %q", got)
 	}
@@ -82,7 +82,7 @@ func TestBuildUpstreamHeaders_AnthropicBeta(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out := BuildUpstreamHeaders(
+			out, _ := BuildUpstreamHeaders(
 				http.Header{"Anthropic-Beta": {tc.in}},
 				"h",
 				0,
@@ -102,7 +102,7 @@ func TestBuildUpstreamHeaders_AnthropicBeta_MultiValueHeader(t *testing.T) {
 	in := http.Header{
 		"Anthropic-Beta": {"files-api/v1", "prompt-caching"},
 	}
-	out := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{})
+	out, _ := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{})
 	if got := out.Get("Anthropic-Beta"); got != "prompt-caching" {
 		t.Errorf("multi-value beta got=%q want=prompt-caching", got)
 	}
@@ -114,7 +114,7 @@ func TestBuildUpstreamHeaders_StripExtra(t *testing.T) {
 		"X-Also-Drop": {"yes"},
 		"X-Keep":      {"please"},
 	}
-	out := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{
+	out, _ := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{
 		StripExtra: []string{"x-drop", "X-ALSO-DROP"}, // case-insensitive
 	})
 	if _, ok := out["X-Drop"]; ok {
@@ -132,7 +132,7 @@ func TestBuildUpstreamHeaders_AddExtra(t *testing.T) {
 	in := http.Header{
 		"X-Existing": {"a"},
 	}
-	out := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{
+	out, _ := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{
 		AddExtra: []HeaderPair{
 			{Name: "X-New", Value: "v1"},
 			{Name: "X-Existing", Value: "b"}, // appends
@@ -313,7 +313,7 @@ func TestBuildUpstreamHeaders_PreservesMultiValueHeaders(t *testing.T) {
 	in := http.Header{
 		"X-Multi": {"a", "b", "c"},
 	}
-	out := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{})
+	out, _ := BuildUpstreamHeaders(in, "h", 0, HeaderOpts{})
 	got := append([]string{}, out["X-Multi"]...)
 	sort.Strings(got)
 	if !equalSlice(got, []string{"a", "b", "c"}) {
@@ -342,6 +342,85 @@ func TestBuildUpstreamHeaders_DoesNotMutateInput(t *testing.T) {
 	}
 	if _, ok := in["X-Added"]; ok {
 		t.Error("input gained X-Added — pipeline mutated caller's header map")
+	}
+}
+
+func TestBuildUpstreamHeaders_HeaderStats(t *testing.T) {
+	// Mix of strips, beta-token strips, and injects so every field of
+	// HeaderStats is exercised in one shot.
+	in := http.Header{
+		"Connection":     {"keep-alive"},   // 1 hop-by-hop strip
+		"X-Drop":         {"v1", "v2"},     // 2 configured strips
+		"Anthropic-Beta": {"files-api,prompt-caching,files-api/v2"}, // 2 beta tokens dropped, 1 kept
+		"X-Pass":         {"yes"},          // pass through (no count)
+	}
+	_, stats := BuildUpstreamHeaders(in, "upstream.host", 7, HeaderOpts{
+		StripExtra: []string{"X-Drop"},
+		AddExtra:   []HeaderPair{{"X-Added", "v"}},
+	})
+	// 1 (Connection) + 2 (X-Drop) + 2 (beta tokens) = 5
+	if stats.StripCount != 5 {
+		t.Errorf("StripCount = %d, want 5", stats.StripCount)
+	}
+	// Host + Content-Length + X-Added = 3
+	if stats.InjectCount != 3 {
+		t.Errorf("InjectCount = %d, want 3", stats.InjectCount)
+	}
+	if stats.BetaTokensStripped != 2 {
+		t.Errorf("BetaTokensStripped = %d, want 2", stats.BetaTokensStripped)
+	}
+}
+
+func TestBuildUpstreamHeaders_HeaderStats_NoOpRequest(t *testing.T) {
+	// Pure pass-through with no upstream injection: stats are zero so
+	// the proxy's `mutated` boolean comes out false.
+	in := http.Header{"X-Pass": {"yes"}}
+	_, stats := BuildUpstreamHeaders(in, "", 0, HeaderOpts{})
+	if stats.StripCount != 0 || stats.InjectCount != 0 || stats.BetaTokensStripped != 0 {
+		t.Errorf("expected all-zero HeaderStats, got %+v", stats)
+	}
+}
+
+func TestBuildUpstreamHeaders_HeaderStats_BalancedStripsAndInjectsStillMutated(t *testing.T) {
+	// Regression for the count-delta bug: stripping a header and
+	// injecting one in its place can leave the FINAL header count equal
+	// to the inbound count, but stats must still report both sides so
+	// the proxy's `mutated` boolean comes out true.
+	in := http.Header{
+		"X-Drop":  {"v"}, // 1 configured strip
+		"X-Keep1": {"a"},
+		"X-Keep2": {"b"},
+	}
+	out, stats := BuildUpstreamHeaders(in, "", 0, HeaderOpts{
+		StripExtra: []string{"X-Drop"},
+		AddExtra:   []HeaderPair{{"X-Added", "v"}},
+	})
+	if got := len(out); got != len(in) {
+		t.Fatalf("test premise wrong: in=%d out=%d", len(in), got)
+	}
+	if stats.StripCount == 0 || stats.InjectCount == 0 {
+		t.Errorf("expected non-zero strip+inject counts, got %+v", stats)
+	}
+}
+
+func TestFilterAnthropicBeta_DroppedCount(t *testing.T) {
+	cases := []struct {
+		in            string
+		wantKept      string
+		wantDroppedNo int
+	}{
+		{"files-api", "", 1},
+		{"foo,files-api,bar,files-api/v2", "foo, bar", 2},
+		{"foo,bar", "foo, bar", 0},
+		{"", "", 0},
+		{"  ,  ", "", 0}, // empty fields don't count as dropped
+	}
+	for _, tc := range cases {
+		got, dropped := filterAnthropicBeta(tc.in)
+		if got != tc.wantKept || dropped != tc.wantDroppedNo {
+			t.Errorf("filterAnthropicBeta(%q) = (%q, %d), want (%q, %d)",
+				tc.in, got, dropped, tc.wantKept, tc.wantDroppedNo)
+		}
 	}
 }
 

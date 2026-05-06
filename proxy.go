@@ -152,11 +152,22 @@ type RewriteInfo struct {
 // `claude_ds.vision.route.count` counter.
 type VisionInfo struct {
 	// Routed is true when the request was redirected to VisionModel.
+	// False when (a) there were no images to route or (b) routing is
+	// disabled via empty cfg.VisionModel — distinguish those two with
+	// the Disabled flag.
 	Routed bool
+
+	// Disabled is true when image content was detected on the request
+	// but cfg.VisionModel == "" so the proxy did not route. Lets the
+	// span / counter tell "no image" apart from "image but disabled"
+	// without needing a second pass over the body.
+	Disabled bool
 
 	// ImageCount is the number of image blocks consolidated into the
 	// last user turn (direct + nested-in-tool_result combined). Drives
-	// the `claude_ds.vision.images.count` span attribute.
+	// the `claude_ds.vision.images.count` span attribute. Populated
+	// even when Disabled so SigNoz can see the "would have routed"
+	// volume.
 	ImageCount int
 
 	// ImagesCollected is preserved for backwards-compat with the
@@ -722,6 +733,7 @@ func (p *Proxy) runVision(ctx context.Context, body []byte) ([]byte, VisionInfo)
 		attribute.String("claude_ds.transform.step", "vision_route"),
 		attribute.Bool("claude_ds.transform.mutated", info.Routed),
 		attribute.Bool("claude_ds.vision.routed", info.Routed),
+		attribute.Bool("claude_ds.vision.disabled", info.Disabled),
 		attribute.Int("claude_ds.vision.images_collected", info.ImagesCollected),
 		attribute.Int("claude_ds.vision.images.count", info.ImageCount),
 		attribute.Int("claude_ds.vision.tool_use.converted_count", info.ToolUseConverted),
@@ -740,6 +752,7 @@ func (p *Proxy) runVision(ctx context.Context, body []byte) ([]byte, VisionInfo)
 	))
 	p.metrics.visionRoute.Add(ctx, 1, metric.WithAttributes(
 		attribute.Bool("claude_ds.vision.routed", info.Routed),
+		attribute.Bool("claude_ds.vision.disabled", info.Disabled),
 		attribute.String("claude_ds.model.from", info.ModelFrom),
 		attribute.String("claude_ds.model.to", info.ModelTo),
 	))
@@ -904,23 +917,34 @@ func (p *Proxy) forwardUpstream(
 	hdrCtx, hdrSpan := p.tracer.Start(ctx, "claude_ds.transform.header_pipeline")
 	hdrStart := time.Now()
 	originalCount := headerCount(r.Header)
-	upstreamHeaders := BuildUpstreamHeaders(r.Header, p.upstream.Host, len(body), p.headerOpts)
+	upstreamHeaders, hdrStats := BuildUpstreamHeaders(r.Header, p.upstream.Host, len(body), p.headerOpts)
 	finalCount := headerCount(upstreamHeaders)
+	// Mutated reflects pipeline activity, not a count delta — N strips +
+	// N injects yields the same final count but is still a mutation.
+	mutated := hdrStats.StripCount > 0 || hdrStats.InjectCount > 0
 	hdrSpan.SetAttributes(
 		attribute.String("claude_ds.transform.step", "header_pipeline"),
-		attribute.Bool("claude_ds.transform.mutated", originalCount != finalCount),
+		attribute.Bool("claude_ds.transform.mutated", mutated),
 		attribute.Int("claude_ds.header.in_count", originalCount),
 		attribute.Int("claude_ds.header.out_count", finalCount),
+		attribute.Int("claude_ds.header.strip_count", hdrStats.StripCount),
+		attribute.Int("claude_ds.header.inject_count", hdrStats.InjectCount),
+		attribute.Int("claude_ds.header.beta.stripped_count", hdrStats.BetaTokensStripped),
 	)
 	hdrDur := time.Since(hdrStart).Seconds() * 1000
 	p.metrics.transformCount.Add(hdrCtx, 1, metric.WithAttributes(
 		attribute.String("claude_ds.transform.step", "header_pipeline"),
-		attribute.Bool("claude_ds.transform.mutated", originalCount != finalCount),
+		attribute.Bool("claude_ds.transform.mutated", mutated),
 	))
 	p.metrics.transformDuration.Record(hdrCtx, hdrDur, metric.WithAttributes(
 		attribute.String("claude_ds.transform.step", "header_pipeline"),
-		attribute.Bool("claude_ds.transform.mutated", originalCount != finalCount),
+		attribute.Bool("claude_ds.transform.mutated", mutated),
 	))
+	if hdrStats.BetaTokensStripped > 0 {
+		// Count only — never the value. Redaction guarantee is enforced
+		// by tests in headers_test.go.
+		p.metrics.headerBetaStripped.Add(hdrCtx, int64(hdrStats.BetaTokensStripped))
+	}
 	hdrSpan.End()
 
 	// Build the upstream URL. The Python proxy prepends UP_PATH_PREFIX

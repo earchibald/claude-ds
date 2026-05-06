@@ -82,10 +82,6 @@ const imagePlaceholder = "[image — in current turn]"
 // silently corrupting the request.
 func routeVision(body []byte, cfg *Config) ([]byte, VisionInfo, error) {
 	info := VisionInfo{}
-	if cfg == nil || cfg.VisionModel == "" {
-		// Vision routing disabled — short-circuit, leave body untouched.
-		return body, info, nil
-	}
 	if len(body) == 0 || !looksLikeJSON(body) {
 		return body, info, nil
 	}
@@ -95,10 +91,26 @@ func routeVision(body []byte, cfg *Config) ([]byte, VisionInfo, error) {
 		// `_rewrite_body`'s try/except json.loads).
 		return body, info, nil
 	}
-	// hasImageContent re-decodes the bytes; we already have `obj` in
-	// hand, so call the shared helper that takes the decoded messages.
 	msgsRaw, _ := obj["messages"].([]any)
-	if !messagesContainImage(msgsRaw) {
+	imageCount := countImagesInMessages(msgsRaw)
+	if imageCount == 0 {
+		// No images in the request — nothing for vision routing to do.
+		// Counter / span fire with Routed=false, Disabled=false,
+		// ImageCount=0 so SigNoz sees the "no image" baseline.
+		return body, info, nil
+	}
+
+	// Past this point, the body has at least one image. Always populate
+	// the counts so SigNoz can tell "would-have-routed but disabled"
+	// apart from "no image at all".
+	info.ImageCount = imageCount
+	info.ImagesCollected = imageCount
+
+	if cfg == nil || cfg.VisionModel == "" {
+		// Routing disabled at config level — record Disabled so the
+		// span / counter can distinguish this from the no-image case,
+		// and leave the body untouched.
+		info.Disabled = true
 		return body, info, nil
 	}
 
