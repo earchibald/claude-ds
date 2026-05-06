@@ -20,7 +20,7 @@
 // Subcommand-body ownership map (each TODO is parked behind a comment so
 // `git grep "TODO: " main.go` enumerates the open work):
 //
-//	--doctor          → CDS-19
+//	--doctor          → CDS-20
 //	--setup           → CDS-13 (first-run onboarding)
 //	--rotate-key      → CDS-13
 //	--reset-password  → CDS-13 (alias of --rotate-key)
@@ -38,8 +38,26 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
+
+// defaultConfigPath returns the canonical config file location:
+// $XDG_CONFIG_HOME/claude-ds/config (default $HOME/.config/claude-ds/config).
+// Centralised here so subcommands (--doctor, --setup, --rotate-key, the
+// default launch path) all converge on the same resolution.
+func defaultConfigPath() string {
+	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+		return filepath.Join(v, "claude-ds", "config")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Last-ditch: a path the loader will treat as "missing" and
+		// synthesise defaults from. Better than crashing.
+		return filepath.Join(".config", "claude-ds", "config")
+	}
+	return filepath.Join(home, ".config", "claude-ds", "config")
+}
 
 // main is intentionally thin: parse args, dispatch, exit. All real work
 // lives in per-subcommand functions so downstream phases can fill them
@@ -127,7 +145,18 @@ func run(args []string) int {
 	case subcommandHelp:
 		return runHelp(os.Stdout, os.Stderr)
 	case subcommandDoctor:
-		return runTODO("--doctor", "CDS-19")
+		// Best-effort config load. LoadConfig synthesises a defaults-only
+		// Config when the file is missing — the doctor's own check 2
+		// will surface that as ✗ with an actionable next step. Hard
+		// errors (e.g. config exists but is unreadable) get reported
+		// here and we still hand a usable Config to runDoctor so the
+		// remaining checks run.
+		cfg, cfgErr := LoadConfig(defaultConfigPath())
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "claude-ds doctor: config load failed: %v\n", cfgErr)
+			cfg = &Config{Path: defaultConfigPath()}
+		}
+		return runDoctor(cfg)
 	case subcommandSetup:
 		return runTODO("--setup", "CDS-13")
 	case subcommandRotateKey:
