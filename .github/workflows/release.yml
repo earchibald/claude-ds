@@ -9,11 +9,81 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------
+  # Phase 1: cross-compile the four platform binaries from the tagged
+  # commit. Each matrix shard produces one static binary; they all upload
+  # as workflow artifacts so the release job can stitch them into the
+  # GitHub Release. Static-binary build flags match the spec (see
+  # docs/superpowers/specs/2026-05-05-claude-ds-go-rewrite-design.md
+  # → "Implementation notes for agents").
+  # ---------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static binary (${{ matrix.goos }}-${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          out="claude-ds-${GOOS}-${GOARCH}"
+          go build -ldflags="-s -w" -o "$out" ./...
+          file "$out" || true
+          ls -la "$out"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-ds-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: claude-ds-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------
+  # Phase 2: assemble the GitHub Release. Pulls the four binary artifacts
+  # built above, generates checksums.txt, extracts the changelog entry
+  # for the tag, and creates the release with all five assets attached.
+  # The changelog-extraction logic is preserved verbatim from the
+  # pre-CDS-10 workflow so the release-notes flow is unchanged.
+  # ---------------------------------------------------------------------
   release:
+    name: Publish release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        run: |
+          cd dist
+          ls -la
+          sha256sum claude-ds-* > checksums.txt
+          cat checksums.txt
 
       - name: Extract changelog entry
         id: changelog
@@ -60,4 +130,9 @@ jobs:
           gh release create "${{ steps.changelog.outputs.tag }}" \
             --title "${{ steps.changelog.outputs.tag }}" \
             --notes-file release-notes.md \
-            --verify-tag
+            --verify-tag \
+            dist/claude-ds-darwin-amd64 \
+            dist/claude-ds-darwin-arm64 \
+            dist/claude-ds-linux-amd64 \
+            dist/claude-ds-linux-arm64 \
+            dist/checksums.txt
