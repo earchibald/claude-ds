@@ -824,6 +824,21 @@ _cds_log()  { echo "claude-ds: $*" >&2; }
 _cds_warn() { echo "claude-ds: ⚠ $*" >&2; }
 _cds_die()  { _cds_warn "$*"; exit 1; }
 
+# When unlock_auto_mode=1 and the proxy is down, spoofed claude-* model IDs
+# go directly to DeepSeek, which silently aliases unknown IDs to flash (its
+# cheapest model). Call this from every path that disables the proxy so the
+# user knows they're about to get a silent model downgrade.
+_cds_warn_flash_downgrade() {
+  case "${unlock_auto_mode:-0}" in
+    1|true|yes|on)
+      _cds_warn "  ⚠ UNLOCK_AUTO_MODE IS ON — spoofed claude-* model IDs will NOT be rewritten."
+      _cds_warn "  ⚠ DeepSeek will silently alias them to deepseek-flash (cheapest model)."
+      _cds_warn "  ⚠ Fix: ensure python3 is installed and claude-ds-proxy.py is reachable."
+      sleep 2  # let the user read the warning before TUI clears the screen
+      ;;
+  esac
+}
+
 # Is `key` in the KNOWN_CONFIG_KEYS list?
 _cds_is_known_key() {
   local k="$1" known
@@ -1646,6 +1661,7 @@ if [[ "$proxy_needed" -eq 1 ]]; then
   if ! command -v python3 >/dev/null 2>&1; then
     _cds_warn "python3 not found — running with the reasoning-effort proxy DISABLED for this session."
     _cds_warn "  install python3 (or set proxy_effort=off in $CONFIG_FILE to silence this)."
+    _cds_warn_flash_downgrade
     proxy_needed=0
   fi
 fi
@@ -1759,11 +1775,13 @@ if [[ "$proxy_needed" -eq 1 ]]; then
       skipped)
         _cds_warn "curl not installed and proxy script missing — running with proxy DISABLED."
         _cds_warn "  install curl, or place claude-ds-proxy.py next to claude-ds, or set proxy_effort=off."
+        _cds_warn_flash_downgrade
         proxy_needed=0
         ;;
       failed|*)
         _cds_warn "proxy download failed (network, 404, or write permission) — running with proxy DISABLED."
         _cds_warn "  fix by re-running with curl available, or place the proxy script next to claude-ds, or set proxy_effort=off."
+        _cds_warn_flash_downgrade
         proxy_needed=0
         ;;
     esac
@@ -1783,6 +1801,7 @@ if [[ "$proxy_needed" -eq 1 ]]; then
   EFFORT_MAP="$effort_map" \
   EFFORT_DEFAULT="$effort_default" \
   WIRE_MODEL_MAP="$wire_model_map" \
+  DEFAULT_UPSTREAM_MODEL="$resolved_model" \
   PROXY_BIND="$proxy_bind_val" \
   PROXY_PORT=0 \
   PROXY_DEBUG="$proxy_debug_val" \
@@ -1800,6 +1819,7 @@ if [[ "$proxy_needed" -eq 1 ]]; then
   if [[ -z "$proxy_port" ]] || ! kill -0 "$claude_ds_proxy_pid" 2>/dev/null; then
     _cds_warn "reasoning-effort proxy failed to start — running with proxy DISABLED for this session."
     _cds_warn "  rerun with CLAUDE_DS_PROXY_DEBUG=1 to see the python child's startup error."
+    _cds_warn_flash_downgrade
     [[ -n "$claude_ds_proxy_pid" ]] && wait "$claude_ds_proxy_pid" 2>/dev/null
     claude_ds_proxy_pid=""
     proxy_needed=0
