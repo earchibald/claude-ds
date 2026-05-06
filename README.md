@@ -82,14 +82,17 @@ checklist and tells you exactly what to fix.
 ## Quickstart
 
 ```bash
-# Zero to configured in one command (latest stable release):
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
+# Zero to configured in one command:
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 ```
 
-The installer pins to a **tagged release** — you get a known-good version,
-not whatever landed on `main` five minutes ago. Each release is published
-on the [GitHub Releases](https://github.com/earchibald/claude-ds/releases)
-page with a changelog extracted from [CHANGELOG.md](CHANGELOG.md).
+The installer automatically resolves the **latest GitHub Release** — you get
+a known-good, tagged version without us having to update a version number in
+this README. Each release is published on the
+[GitHub Releases](https://github.com/earchibald/claude-ds/releases) page with
+a changelog extracted from [CHANGELOG.md](CHANGELOG.md).
+
+To pin a specific version: `CDS_INSTALL_REF=v0.7.4 curl -fsSL .../main/install.sh | bash`
 
 The installer asks where to install (`~/.local/bin` by default, or
 `/usr/local/bin`, or a custom path), handles `sudo` transparently when
@@ -137,23 +140,31 @@ claude-ds --rotate-key   # rotate the stored API key
 ### curl | bash (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 ```
 
-**Always pin to a release tag** (`v0.8.0`, `v0.7.4`, etc.) — you get a
-deterministic, tested version. Check the [Releases](https://github.com/earchibald/claude-ds/releases)
-page for the latest tag and corresponding changelog.
+The installer auto-resolves the **latest GitHub Release** and downloads from
+that tag. See the [Releases](https://github.com/earchibald/claude-ds/releases)
+page for the current latest and its changelog.
 
 The installer is interactive — it asks where to install, handles `sudo`,
 and runs first-time onboarding. See [Quickstart](#quickstart) for what
 to expect.
 
-### Upgrading
+### Pinning a specific version
 
-Re-run the installer with the new tag:
+Set `CDS_INSTALL_REF` to any tag, branch, or SHA:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
+CDS_INSTALL_REF=v0.7.4 curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+```
+
+### Upgrading
+
+Re-run the installer — it fetches the latest release automatically:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 ```
 
 The installer detects an existing install and offers to overwrite.
@@ -164,6 +175,7 @@ installer only replaces the wrapper and proxy script binaries.
 
 ```bash
 mkdir -p ~/.local/bin
+# Replace v0.8.0 with the latest tag from the Releases page.
 curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/claude-ds         -o ~/.local/bin/claude-ds
 curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/claude-ds-proxy.py -o ~/.local/bin/claude-ds-proxy.py
 chmod +x ~/.local/bin/claude-ds
@@ -176,11 +188,10 @@ Make sure `~/.local/bin` is on `$PATH`.
 ### Bleeding edge (`main` branch)
 
 If you need an unreleased fix or want to test a PR before it lands in a
-release, you can install from `main`. **No guarantees — `main` moves
-independently of tagged releases and may not match any published changelog.**
+release, force the installer to pull from `main`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+CDS_INSTALL_REF=main curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
 ```
 
 ### Requirements

@@ -12,11 +12,35 @@
 
 set -euo pipefail
 
+# Resolve REPO_BASE. Priority:
+#   1. CDS_INSTALL_REF env var (explicit tag/branch/sha)
+#   2. Latest GitHub release (fetched from API)
+#   3. main branch (fallback when API is unreachable)
+#   4. git branch (when running from a local checkout)
+_resolve_install_ref() {
+  if [[ -n "${CDS_INSTALL_REF:-}" ]]; then
+    echo "$CDS_INSTALL_REF"
+    return
+  fi
+
+  # Query GitHub API for the latest release tag. No auth = 60 req/hr, but this
+  # is a one-shot install so that's fine. Fall back to main on any failure.
+  local latest
+  latest=$(curl -fsSL --max-time 5 \
+    "https://api.github.com/repos/earchibald/claude-ds/releases/latest" \
+    2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+  if [[ -n "$latest" ]]; then
+    echo "$latest"
+  else
+    echo "main"
+  fi
+}
+
 if [[ -z "${REPO_BASE:-}" ]] && git rev-parse --git-dir >/dev/null 2>&1; then
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   REPO_BASE="https://raw.githubusercontent.com/earchibald/claude-ds/${branch}"
 fi
-: "${REPO_BASE:=https://raw.githubusercontent.com/earchibald/claude-ds/main}"
+: "${REPO_BASE:=https://raw.githubusercontent.com/earchibald/claude-ds/$(_resolve_install_ref)}"
 CLAUDE_DS_URL="$REPO_BASE/claude-ds"
 PROXY_URL="$REPO_BASE/claude-ds-proxy.py"
 
