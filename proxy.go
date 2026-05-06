@@ -664,10 +664,14 @@ func (p *Proxy) runRewrite(ctx context.Context, body []byte) ([]byte, RewriteInf
 		attribute.String("claude_ds.wire_model.kind", wireModelKindOrDefault(info.WireModelKind)),
 	)
 	if info.WireModelKind != "" && info.ModelRequested != info.ModelUpstream {
+		wireSpan.SetAttributes(
+			attribute.Bool("claude_ds.wire_model.catch_all_used", info.WireModelKind == "catchall"),
+		)
 		p.metrics.wireModelRewrite.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("claude_ds.wire_model.from", info.ModelRequested),
 			attribute.String("claude_ds.wire_model.to", info.ModelUpstream),
 			attribute.String("claude_ds.wire_model.kind", info.WireModelKind),
+			attribute.Bool("claude_ds.wire_model.catch_all_used", info.WireModelKind == "catchall"),
 		))
 	}
 	wireSpan.End()
@@ -721,20 +725,14 @@ func (p *Proxy) runEffort(ctx context.Context, body []byte, info *RewriteInfo) [
 	defer span.End()
 	start := time.Now()
 
-	// Resolve spec for this model. Per-model override wins; otherwise
-	// fall back to the global default.
+	// Resolve spec for this model. Per-tier override (CDS-18) wins;
+	// otherwise fall back to cfg.ProxyEffort (EFFORT_DEFAULT).
 	model := info.ModelUpstream
 	if model == "" {
 		model = info.ModelRequested
 	}
-	specRaw := p.cfg.ProxyEffort
-	if perModel, ok := p.transformMap[model]; ok && perModel != nil {
-		// CDS-12's per-tier overrides aren't keyed by upstream model id
-		// — they're keyed by tier. The transformMap covers WIRE_MODEL
-		// regimes once that env var is wired through. For now the
-		// global default applies.
-		_ = perModel
-	}
+	tier := modelTier(p.cfg, model)
+	specRaw := effortSpecForModel(p.cfg, model)
 	resolver, err := ParseSpec(specRaw)
 	if err != nil {
 		span.RecordError(err)
@@ -754,6 +752,7 @@ func (p *Proxy) runEffort(ctx context.Context, body []byte, info *RewriteInfo) [
 			attribute.String("claude_ds.transform.step", "effort"),
 			attribute.Bool("claude_ds.transform.mutated", false),
 			attribute.String("claude_ds.effort.regime", "passthrough"),
+			attribute.String("claude_ds.model.tier", tier),
 		)
 		p.metrics.transformCount.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("claude_ds.transform.step", "effort"),
@@ -783,6 +782,12 @@ func (p *Proxy) runEffort(ctx context.Context, body []byte, info *RewriteInfo) [
 	}
 	bucket := BucketFromThinking(obj)
 	regime := resolver(bucket)
+	// Capture incoming reasoning_effort (non-redacting — the value is a
+	// closed enum from the Anthropic API, never user data).
+	previous := "<absent>"
+	if v, ok := obj["reasoning_effort"].(string); ok {
+		previous = v
+	}
 	if regime != RegimeOff {
 		ApplyRegime(obj, regime)
 		body2, jerr := json.Marshal(obj)
@@ -796,12 +801,15 @@ func (p *Proxy) runEffort(ctx context.Context, body []byte, info *RewriteInfo) [
 	}
 	info.EffortBucket = bucket
 	info.EffortRegime = regime
+	info.EffortPreviousValue = previous
 
 	span.SetAttributes(
 		attribute.String("claude_ds.transform.step", "effort"),
 		attribute.Bool("claude_ds.transform.mutated", regime != RegimeOff),
 		attribute.String("claude_ds.effort.bucket", string(bucket)),
 		attribute.String("claude_ds.effort.regime", regimeForAttribute(regime)),
+		attribute.String("claude_ds.effort.previous_value", previous),
+		attribute.String("claude_ds.model.tier", tier),
 	)
 	p.metrics.transformCount.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("claude_ds.transform.step", "effort"),
@@ -1064,35 +1072,11 @@ func (p *Proxy) emitLog(ctx context.Context, sev otellog.Severity, msg string, a
 
 // ---------- Phase-4 stubs ---------------------------------------------------
 //
-// rewriteBody and routeVision are placeholder implementations that
-// pass the body through unchanged with empty info. CDS-18 (request
-// rewriting) replaces rewriteBody; CDS-19 (vision routing) replaces
-// routeVision. Both functions preserve the signatures the proxy needs
-// so the replacement is a body-only edit at Phase 4.
-//
-// TODO: replaced by CDS-18 / CDS-19.
-
-func rewriteBody(b []byte, _ *Config) ([]byte, RewriteInfo, error) {
-	// Best-effort model-id extraction so the OTLP attributes reflect
-	// what the caller asked for, even before CDS-18 lands the real
-	// rewrite logic. Non-JSON bodies pass through untouched.
-	info := RewriteInfo{WireModelKind: "noop"}
-	if len(b) == 0 {
-		return b, info, nil
-	}
-	if !looksLikeJSON(b) {
-		return b, info, nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(b, &obj); err != nil {
-		return b, info, nil
-	}
-	if m, ok := obj["model"].(string); ok {
-		info.ModelRequested = m
-		info.ModelUpstream = m
-	}
-	return b, info, nil
-}
+// rewriteBody is the real CDS-18 implementation — see rewrite.go.
+// routeVision is the CDS-19 stub: it returns the body unchanged plus
+// an empty VisionInfo (Routed=false). CDS-19 replaces it with vision
+// routing; the signature is preserved so this file doesn't need to
+// change again.
 
 func routeVision(b []byte, _ *Config) ([]byte, VisionInfo, error) {
 	return b, VisionInfo{}, nil
