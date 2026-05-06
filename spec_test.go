@@ -1,4 +1,4 @@
-package claudeds
+package main
 
 import (
 	"reflect"

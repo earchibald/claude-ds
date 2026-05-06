@@ -17,7 +17,7 @@
 //
 // The parser is case-insensitive for keywords. Whitespace around clauses
 // and around `=` is tolerated.
-package claudeds
+package main
 
 import (
 	"fmt"
