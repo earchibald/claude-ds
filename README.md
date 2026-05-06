@@ -1,5 +1,16 @@
 # claude-ds
 
+> [!IMPORTANT]
+> \<extremaly professor farnsworth voice\> GOOD NEWS, EVERYONE!
+> - Things will be less insanely cheap, BUT
+> - claude-ds should be a lot smarter.
+>
+> There was one missed case from reverse-engineering `claude` where a fair number of tool-related
+> requests were coming to the proxy as Opus-4.7 and being routed to deepseek 4 flash :(
+>
+> This has been fixed! Hooray OTLP! Logs and charts to verify!
+
+
 > Run [Claude Code](https://docs.anthropic.com/claude/code) against
 > [DeepSeek](https://www.deepseek.com)'s Anthropic-compatible API — with
 > system-keychain / 1Password / Infisical secret refs, schema-versioned
