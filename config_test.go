@@ -10,12 +10,20 @@ import (
 )
 
 // stubResolve replaces resolveFn for the duration of a test. The default
-// is a passthrough so secret refs work as plain values.
+// is a passthrough so secret refs work as plain values. Mutation is
+// guarded by resolveFnMu so parallel tests (and any future async
+// readers reaching the global via callResolve) don't race.
 func stubResolve(t *testing.T, fn func(string) (string, error)) {
 	t.Helper()
+	resolveFnMu.Lock()
 	prev := resolveFn
 	resolveFn = fn
-	t.Cleanup(func() { resolveFn = prev })
+	resolveFnMu.Unlock()
+	t.Cleanup(func() {
+		resolveFnMu.Lock()
+		resolveFn = prev
+		resolveFnMu.Unlock()
+	})
 }
 
 // writeTempConfig writes `contents` to a fresh temp config and returns

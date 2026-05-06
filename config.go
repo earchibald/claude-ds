@@ -39,6 +39,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -114,11 +115,24 @@ var knownKeysSet = func() map[string]struct{} {
 }()
 
 // resolveFn is the indirection point for the secretref resolver. CDS-13
-// defines `Resolve(ref string) (string, error)` in `secretref.go`; this
-// var lets tests stub the resolver without depending on a real
-// implementation. Local builds on the CDS-12 branch will fail with
-// "undefined: Resolve" until CDS-13 lands — that is expected.
-var resolveFn = Resolve
+// defines `Resolve(ref string) (string, error)` in `secretref.go`; the
+// indirection lets tests stub the resolver without depending on a real
+// implementation. Mutation is guarded by resolveFnMu so parallel tests
+// (and any future async readers) don't race on the global. Production
+// code reads the resolver through callResolve(...) below.
+var (
+	resolveFnMu sync.RWMutex
+	resolveFn   = Resolve
+)
+
+// callResolve invokes the current resolveFn under a read lock so that
+// concurrent reads with a parallel-test setter are race-free.
+func callResolve(ref string) (string, error) {
+	resolveFnMu.RLock()
+	fn := resolveFn
+	resolveFnMu.RUnlock()
+	return fn(ref)
+}
 
 // Config is the parsed-and-validated representation of the on-disk
 // config file. Field set matches the design spec's "Config struct"
@@ -641,7 +655,7 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
 		// Resolve secret refs (a `op://...` endpoint is unusual but
 		// permitted; mostly this is a no-op passthrough for plain URLs).
-		if resolved, err := resolveFn(v); err == nil && resolved != "" {
+		if resolved, err := callResolve(v); err == nil && resolved != "" {
 			cfg.OTLPEndpoints = appendUnique(cfg.OTLPEndpoints, resolved)
 		}
 	}
@@ -651,7 +665,7 @@ func applyEnvOverrides(cfg *Config) {
 			merged = map[string]string{}
 		}
 		for hk, hv := range parseKVList(v, ",") {
-			if resolved, err := resolveFn(hv); err == nil && resolved != "" {
+			if resolved, err := callResolve(hv); err == nil && resolved != "" {
 				merged[hk] = resolved
 			}
 		}
@@ -666,7 +680,7 @@ func applyEnvOverrides(cfg *Config) {
 			// Resource attribute values are not typically secret, but
 			// we still route them through resolveFn so a user *can*
 			// stash one in 1Password if they wish (e.g. tenant IDs).
-			if resolved, err := resolveFn(rv); err == nil && resolved != "" {
+			if resolved, err := callResolve(rv); err == nil && resolved != "" {
 				merged[rk] = resolved
 			}
 		}
