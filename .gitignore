@@ -11,3 +11,17 @@
 __pycache__/
 
 .env
+
+# Go build outputs (CDS-10).
+# The Bash launcher named `claude-ds` lives at the repo root, so local
+# Go builds emit to bin/claude-ds-test (see Makefile) to avoid clobbering
+# it. Anything under bin/ is build-only and never committed.
+bin/
+
+# Per-platform release artifacts produced by the release workflow's
+# Go build matrix (uploaded to the release, never committed).
+claude-ds-darwin-amd64
+claude-ds-darwin-arm64
+claude-ds-linux-amd64
+claude-ds-linux-arm64
+checksums.txt
