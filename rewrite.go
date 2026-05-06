@@ -236,6 +236,57 @@ func hasImageContent(body []byte) bool {
 	return messagesContainImage(msgs)
 }
 
+// countImagesInMessages returns the count of image blocks across all
+// user turns (direct + nested in tool_result), matching what
+// routeVision would collect. Used by the disabled-path in routeVision
+// so the vision-route span / counter still expose ImageCount when
+// vision routing is turned off (cfg.VisionModel == "").
+//
+// Assistant turns are deliberately not scanned: routeVision only
+// consolidates images out of user turns, so the count we report here
+// matches the routed-path's `len(imagesCollected)`.
+func countImagesInMessages(messages []any) int {
+	n := 0
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "user" {
+			continue
+		}
+		content, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, b := range content {
+			block, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch block["type"] {
+			case "image":
+				n++
+			case "tool_result":
+				inner, ok := block["content"].([]any)
+				if !ok {
+					continue
+				}
+				for _, nb := range inner {
+					nblock, ok := nb.(map[string]any)
+					if !ok {
+						continue
+					}
+					if nblock["type"] == "image" {
+						n++
+					}
+				}
+			}
+		}
+	}
+	return n
+}
+
 // messagesContainImage walks a decoded messages array. Split out so
 // rewriteBody can re-use it on the already-decoded body without paying
 // for a second Unmarshal.

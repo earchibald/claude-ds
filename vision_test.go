@@ -46,8 +46,59 @@ func TestRouteVision_DisabledWhenVisionModelEmpty(t *testing.T) {
 	if info.Routed {
 		t.Fatalf("expected Routed=false when VisionModel empty")
 	}
+	if !info.Disabled {
+		t.Fatalf("expected Disabled=true when image present but VisionModel empty")
+	}
+	// Image counts must still be populated so SigNoz can see the
+	// would-have-routed volume when routing is turned off.
+	if info.ImageCount != 1 {
+		t.Fatalf("ImageCount = %d, want 1 (must count even when disabled)", info.ImageCount)
+	}
+	if info.ImagesCollected != 1 {
+		t.Fatalf("ImagesCollected = %d, want 1 (must mirror ImageCount when disabled)", info.ImagesCollected)
+	}
 	if string(out) != string(in) {
 		t.Fatalf("body mutated when routing disabled:\nin:  %s\nout: %s", in, out)
+	}
+}
+
+func TestRouteVision_DisabledWithNoImagesIsCleanPassthrough(t *testing.T) {
+	cfg := &Config{VisionModel: ""}
+	in := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	_, info, err := routeVision(in, cfg)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// No image + disabled config = nothing to report at all.
+	if info.Routed || info.Disabled || info.ImageCount != 0 {
+		t.Fatalf("expected zero VisionInfo, got %+v", info)
+	}
+}
+
+func TestRouteVision_DisabledCountsImageInToolResult(t *testing.T) {
+	// Mirrors the routed-path's tool_result handling: even when
+	// disabled, the count must include images nested inside
+	// tool_result blocks so the disabled-path metric matches what the
+	// routed-path would have collected.
+	cfg := &Config{VisionModel: ""}
+	in := []byte(`{
+		"model": "deepseek-v4-pro",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "t1", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"}}
+				]}
+			]}
+		]
+	}`)
+	_, info, err := routeVision(in, cfg)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !info.Disabled || info.ImageCount != 2 {
+		t.Fatalf("Disabled=%v ImageCount=%d, want Disabled=true ImageCount=2",
+			info.Disabled, info.ImageCount)
 	}
 }
 

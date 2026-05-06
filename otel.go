@@ -41,6 +41,7 @@ import (
 	otelloggl "go.opentelemetry.io/otel/log/global"
 	logsdk "go.opentelemetry.io/otel/sdk/log"
 	metricsdk "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -215,7 +216,35 @@ func exporterOpts(endpoint string, headers map[string]string) (
 		metricOpts = append(metricOpts, otlpmetrichttp.WithHeaders(headers))
 		logOpts = append(logOpts, otlploghttp.WithHeaders(headers))
 	}
+
+	// Force delta temporality for sums/histograms so SigNoz (and any
+	// other delta-preferring backend) populates `metric_metadata` for
+	// our custom `claude_ds_*` instruments. The OTel SDK default is
+	// cumulative, which SigNoz silently drops on the metadata table —
+	// counters arrive but `meta_type` stays empty so they are invisible
+	// in dashboards. Gauges remain cumulative because delta is
+	// undefined for instantaneous reads.
+	metricOpts = append(metricOpts, otlpmetrichttp.WithTemporalitySelector(deltaPreferredTemporality))
 	return traceOpts, metricOpts, logOpts, nil
+}
+
+// deltaPreferredTemporality returns DeltaTemporality for sums and
+// histograms (counter / up-down counter / observable counter /
+// histogram), Cumulative for gauges. SigNoz, Datadog, and Prometheus
+// remote-write all want delta sums; the OTel default of Cumulative is
+// the source of the empty `metric_metadata` rows we hit on the
+// `claude_ds_*` instruments during CDS-9 verification.
+func deltaPreferredTemporality(kind metricsdk.InstrumentKind) metricdata.Temporality {
+	switch kind {
+	case metricsdk.InstrumentKindCounter,
+		metricsdk.InstrumentKindHistogram,
+		metricsdk.InstrumentKindUpDownCounter,
+		metricsdk.InstrumentKindObservableCounter,
+		metricsdk.InstrumentKindObservableUpDownCounter:
+		return metricdata.DeltaTemporality
+	default:
+		return metricdata.CumulativeTemporality
+	}
 }
 
 // buildResource composes the Resource attribute set per acceptance #11.

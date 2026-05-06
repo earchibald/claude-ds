@@ -84,6 +84,30 @@ type HeaderPair struct {
 	Value string
 }
 
+// HeaderStats reports what the header pipeline actually did. Callers use
+// this to drive the OTLP `claude_ds.transform.mutated` attribute (true
+// iff anything was stripped or injected) and to feed the
+// `claude_ds.header.beta.stripped` counter (count of anthropic-beta
+// tokens dropped — never the values themselves).
+type HeaderStats struct {
+	// StripCount is the number of inbound header values dropped:
+	// hop-by-hop strips, proxy-managed strips, configured strips, and
+	// anthropic-beta tokens removed. A header that is dropped entirely
+	// counts each of its values; a beta header that loses N tokens
+	// contributes N here.
+	StripCount int
+
+	// InjectCount is the number of header values written into the
+	// outbound map by the pipeline itself (Host, Content-Length, every
+	// AddExtra entry). Pass-through values do not count.
+	InjectCount int
+
+	// BetaTokensStripped is the count of comma-separated anthropic-beta
+	// tokens removed by filterAnthropicBeta (subset of StripCount).
+	// Drives the `claude_ds.header.beta.stripped` counter.
+	BetaTokensStripped int
+}
+
 // LoadHeaderOptsFromEnv reads PROXY_STRIP_HEADERS, PROXY_ADD_HEADERS and
 // PROXY_DEBUG out of the environment and returns a populated HeaderOpts.
 //
@@ -144,9 +168,12 @@ func LoadHeaderOptsFromEnv() HeaderOpts {
 // only when bodyLen > 0 (matches Python: `if body:`).
 //
 // The returned http.Header is freshly allocated. The caller may mutate
-// it without affecting `in`.
-func BuildUpstreamHeaders(in http.Header, upstreamHost string, bodyLen int, opts HeaderOpts) http.Header {
+// it without affecting `in`. The HeaderStats return summarises what the
+// pipeline did so callers can drive OTLP attributes / counters without
+// re-walking the maps.
+func BuildUpstreamHeaders(in http.Header, upstreamHost string, bodyLen int, opts HeaderOpts) (http.Header, HeaderStats) {
 	out := make(http.Header, len(in)+len(opts.AddExtra)+2)
+	var stats HeaderStats
 
 	// Pre-canonicalise the configured strip list once.
 	extraStrip := make(map[string]struct{}, len(opts.StripExtra))
@@ -173,20 +200,25 @@ func BuildUpstreamHeaders(in http.Header, upstreamHost string, bodyLen int, opts
 		switch {
 		case isHopByHop(canon):
 			logf("strip (hop-by-hop)", canon)
+			stats.StripCount += len(values)
 			continue
 		case isProxyManaged(canon):
 			logf("strip (proxy-managed)", canon)
+			stats.StripCount += len(values)
 			continue
 		}
 		if _, ok := extraStrip[canon]; ok {
 			logf("strip (configured)", canon)
+			stats.StripCount += len(values)
 			continue
 		}
 
 		if canon == "Anthropic-Beta" {
 			// Combine all values, comma-split, filter, rejoin.
 			joined := strings.Join(values, ",")
-			kept := filterAnthropicBeta(joined)
+			kept, dropped := filterAnthropicBeta(joined)
+			stats.BetaTokensStripped += dropped
+			stats.StripCount += dropped
 			if kept == "" {
 				logf("strip (all filtered) anthropic-beta", canon)
 				continue
@@ -205,10 +237,12 @@ func BuildUpstreamHeaders(in http.Header, upstreamHost string, bodyLen int, opts
 	// Inject mandatory proxy-side headers. Host is always re-injected.
 	if upstreamHost != "" {
 		out["Host"] = []string{upstreamHost}
+		stats.InjectCount++
 		logf("inject", "Host")
 	}
 	if bodyLen > 0 {
 		out["Content-Length"] = []string{strconv.Itoa(bodyLen)}
+		stats.InjectCount++
 		logf("inject", "Content-Length")
 	}
 
@@ -216,10 +250,11 @@ func BuildUpstreamHeaders(in http.Header, upstreamHost string, bodyLen int, opts
 	for _, p := range opts.AddExtra {
 		canon := textproto.CanonicalMIMEHeaderKey(p.Name)
 		out[canon] = append(out[canon], p.Value)
+		stats.InjectCount++
 		logf("inject (configured)", canon)
 	}
 
-	return out
+	return out, stats
 }
 
 // isHopByHop reports whether canon (already canonical-MIME form) is one
@@ -239,10 +274,13 @@ func isProxyManaged(canon string) bool {
 // filterAnthropicBeta splits joined on commas, drops fields whose
 // lower-cased text contains any of stripAnthropicBetaSubstrings, and
 // rejoins the survivors with ", " (matches Python's `", ".join(kept)`).
-// Returns "" if every field was filtered.
-func filterAnthropicBeta(joined string) string {
+// Returns "" if every field was filtered, plus the count of fields
+// dropped — the count drives the `claude_ds.header.beta.stripped`
+// counter without ever exposing the values themselves.
+func filterAnthropicBeta(joined string) (string, int) {
 	fields := strings.Split(joined, ",")
 	kept := make([]string, 0, len(fields))
+	dropped := 0
 	for _, f := range fields {
 		f = strings.TrimSpace(f)
 		if f == "" {
@@ -257,9 +295,10 @@ func filterAnthropicBeta(joined string) string {
 			}
 		}
 		if drop {
+			dropped++
 			continue
 		}
 		kept = append(kept, f)
 	}
-	return strings.Join(kept, ", ")
+	return strings.Join(kept, ", "), dropped
 }

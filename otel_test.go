@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	metricsdk "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestBuildOTLPProviders_NoEndpoints exercises the empty-endpoints
@@ -245,6 +247,31 @@ func TestExporterOpts_HeadersPassthrough(t *testing.T) {
 	bare, _, _, _ := exporterOpts("http://example.com", nil)
 	if !(len(traceOpts) > len(bare) && len(metricOpts) > 0 && len(logOpts) > 0) {
 		t.Fatal("expected WithHeaders to add an option")
+	}
+}
+
+// TestDeltaPreferredTemporality_AllInstrumentKinds asserts the
+// SigNoz-friendly temporality mapping: counters / histograms /
+// up-down counters get DeltaTemporality, gauges stay Cumulative.
+// This is the fix for "metric_metadata empty for claude_ds_*" — see
+// CDS-9 follow-ups.
+func TestDeltaPreferredTemporality_AllInstrumentKinds(t *testing.T) {
+	cases := []struct {
+		kind metricsdk.InstrumentKind
+		want metricdata.Temporality
+	}{
+		{metricsdk.InstrumentKindCounter, metricdata.DeltaTemporality},
+		{metricsdk.InstrumentKindHistogram, metricdata.DeltaTemporality},
+		{metricsdk.InstrumentKindUpDownCounter, metricdata.DeltaTemporality},
+		{metricsdk.InstrumentKindObservableCounter, metricdata.DeltaTemporality},
+		{metricsdk.InstrumentKindObservableUpDownCounter, metricdata.DeltaTemporality},
+		{metricsdk.InstrumentKindGauge, metricdata.CumulativeTemporality},
+		{metricsdk.InstrumentKindObservableGauge, metricdata.CumulativeTemporality},
+	}
+	for _, tc := range cases {
+		if got := deltaPreferredTemporality(tc.kind); got != tc.want {
+			t.Errorf("kind=%v got=%v want=%v", tc.kind, got, tc.want)
+		}
 	}
 }
 
