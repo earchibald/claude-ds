@@ -9,3 +9,5 @@
 *.broken.*.bak
 *.partial
 __pycache__/
+
+.env

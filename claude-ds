@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-VERSION="0.7.4"
+VERSION="0.8.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-ds"
 CONFIG_FILE="$CONFIG_DIR/config"
 KEYCHAIN_SERVICE="claude-ds"
@@ -1660,17 +1660,51 @@ if [[ "$proxy_needed" -eq 1 ]]; then
 
   # Build EFFORT_MAP entries in priority-low → priority-high order so the
   # last write wins on wire-id collisions (opus > sonnet > haiku > small_fast).
+  # Keys are the *post-WIRE_MODEL_MAP* (i.e. real upstream wire-level) ids so
+  # effort lookup happens after the proxy un-spoofs the model. When
+  # unlock_auto_mode is unset these are identical to the exported env values.
   effort_map=""
   add_pair() {
     local wire_id="$1" spec="$2"
-    [[ -z "$spec" || "$spec" == "off" || "$spec" == "OFF" ]] && return 0
+    [[ -z "$wire_id" || -z "$spec" || "$spec" == "off" || "$spec" == "OFF" ]] && return 0
     [[ -n "$effort_map" ]] && effort_map+=";"
     effort_map+="${wire_id}=${spec}"
   }
-  add_pair "$ANTHROPIC_SMALL_FAST_MODEL"      "$proxy_effort_small_fast"
-  add_pair "$ANTHROPIC_DEFAULT_HAIKU_MODEL"   "$proxy_effort_haiku"
-  add_pair "$ANTHROPIC_DEFAULT_SONNET_MODEL"  "$proxy_effort_sonnet"
-  add_pair "$ANTHROPIC_DEFAULT_OPUS_MODEL"    "$proxy_effort_opus"
+  add_pair "${model_small_fast:-$resolved_model}" "$proxy_effort_small_fast"
+  add_pair "${model_haiku:-$resolved_model}"      "$proxy_effort_haiku"
+  add_pair "${model_sonnet:-$resolved_model}"     "$proxy_effort_sonnet"
+  add_pair "${model_opus:-$resolved_model}"       "$proxy_effort_opus"
+
+  # Build WIRE_MODEL_MAP — used by the proxy to rewrite the request body's
+  # `model` field on its way upstream. Necessary when unlock_auto_mode=1
+  # because that spoofs ANTHROPIC_MODEL to a Claude-canonical id ("claude-
+  # opus-4-7") which DeepSeek's compat shim doesn't recognise — DeepSeek
+  # silently aliases unknown ids to its cheapest model (flash). The wire
+  # rewrite undoes the spoof at the body level so the upstream sees the
+  # real per-tier model id, while the env var still satisfies claude code's
+  # auto-mode regex gate.
+  wire_model_map=""
+  add_wire_pair() {
+    local from="$1" to="$2"
+    [[ -z "$from" || -z "$to" || "$from" == "$to" ]] && return 0
+    [[ -n "$wire_model_map" ]] && wire_model_map+=";"
+    wire_model_map+="${from}=${to}"
+  }
+  case "${unlock_auto_mode:-0}" in
+    1|true|yes|on)
+      # claude-opus-4-7 is the spoof id used for both ANTHROPIC_MODEL (main
+      # thread) and ANTHROPIC_DEFAULT_OPUS_MODEL (when model_opus unset).
+      # Map it to the user's configured opus-tier wire id, falling back to
+      # `model` (which equals $resolved_model).
+      add_wire_pair "claude-opus-4-7"   "${model_opus:-$resolved_model}"
+      add_wire_pair "claude-sonnet-4-6" "${model_sonnet:-$resolved_model}"
+      # haiku and small_fast share the same spoof id; small_fast is added
+      # first so haiku wins on collision (matches existing tier-priority
+      # ordering above).
+      add_wire_pair "claude-haiku-4-5"  "${model_small_fast:-$resolved_model}"
+      add_wire_pair "claude-haiku-4-5"  "${model_haiku:-$resolved_model}"
+      ;;
+  esac
 
   # If proxy_effort itself is "off" but some per-tier specs are set,
   # don't pass a default (other models pass through unchanged).
@@ -1748,6 +1782,7 @@ if [[ "$proxy_needed" -eq 1 ]]; then
   UPSTREAM_BASE_URL="$ANTHROPIC_BASE_URL" \
   EFFORT_MAP="$effort_map" \
   EFFORT_DEFAULT="$effort_default" \
+  WIRE_MODEL_MAP="$wire_model_map" \
   PROXY_BIND="$proxy_bind_val" \
   PROXY_PORT=0 \
   PROXY_DEBUG="$proxy_debug_val" \

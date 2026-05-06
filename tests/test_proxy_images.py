@@ -516,6 +516,137 @@ class TestProxyIntegration(unittest.TestCase):
         os.environ.pop("EFFORT_DEFAULT", None)
         _reload_proxy()
 
+    # ── WIRE_MODEL_MAP rewrites ───────────────────────────────────────────
+
+    def test_wire_model_rewrite_basic(self):
+        """WIRE_MODEL_MAP should rewrite the request body's `model` field."""
+        os.environ["WIRE_MODEL_MAP"] = "claude-opus-4-7=deepseek-v4-pro"
+        _reload_proxy()
+
+        payload = json.dumps({
+            "model": "claude-opus-4-7",
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        self.assertEqual(upstream_body["model"], "deepseek-v4-pro")
+
+        os.environ.pop("WIRE_MODEL_MAP", None)
+        _reload_proxy()
+
+    def test_wire_model_rewrite_passthrough_unmapped(self):
+        """Models not in WIRE_MODEL_MAP should pass through unchanged."""
+        os.environ["WIRE_MODEL_MAP"] = "claude-opus-4-7=deepseek-v4-pro"
+        _reload_proxy()
+
+        payload = json.dumps({
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        self.assertEqual(upstream_body["model"], "deepseek-v4-flash")
+
+        os.environ.pop("WIRE_MODEL_MAP", None)
+        _reload_proxy()
+
+    def test_wire_model_rewrite_then_effort(self):
+        """Effort lookup must use the *post-rewrite* model id."""
+        os.environ["WIRE_MODEL_MAP"] = "claude-opus-4-7=deepseek-v4-pro"
+        # Effort spec keyed on the POST-rewrite id.
+        os.environ["EFFORT_MAP"] = "deepseek-v4-pro=auto:high"
+        _reload_proxy()
+
+        payload = json.dumps({
+            "model": "claude-opus-4-7",
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        self.assertEqual(upstream_body["model"], "deepseek-v4-pro")
+        # auto:high with no thinking block → "high" regime → thinking enabled.
+        self.assertEqual(upstream_body.get("thinking", {}).get("type"), "enabled")
+
+        os.environ.pop("WIRE_MODEL_MAP", None)
+        os.environ.pop("EFFORT_MAP", None)
+        _reload_proxy()
+
+    def test_wire_model_rewrite_loses_to_vision(self):
+        """Vision routing must override WIRE_MODEL_MAP when an image is present."""
+        os.environ["WIRE_MODEL_MAP"] = "claude-opus-4-7=deepseek-v4-pro"
+        os.environ["VISION_MODEL"] = "deepseek-chat"
+        _reload_proxy()
+
+        payload = json.dumps({
+            "model": "claude-opus-4-7",
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                              "media_type": "image/png",
+                                              "data": _RED_PNG_B64}},
+                {"type": "text", "text": "describe"},
+            ]}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.proxy_url}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+        upstream_body = json.loads(_UpstreamCapture.last_request["body"])
+        # Vision wins.
+        self.assertEqual(upstream_body["model"], "deepseek-chat")
+
+        os.environ.pop("WIRE_MODEL_MAP", None)
+        os.environ.pop("VISION_MODEL", None)
+        _reload_proxy()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Unit tests for _parse_model_map ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestParseModelMap(unittest.TestCase):
+
+    def test_empty(self):
+        self.assertEqual(proxy._parse_model_map(""), {})
+
+    def test_single_pair(self):
+        self.assertEqual(proxy._parse_model_map("a=b"), {"a": "b"})
+
+    def test_multiple_pairs_and_whitespace(self):
+        m = proxy._parse_model_map("  a = b ; c=d ;e=f")
+        self.assertEqual(m, {"a": "b", "c": "d", "e": "f"})
+
+    def test_skips_malformed(self):
+        m = proxy._parse_model_map("a=b;malformed;=missingfrom;missingto=;c=d")
+        self.assertEqual(m, {"a": "b", "c": "d"})
+
+    def test_last_wins_on_collision(self):
+        self.assertEqual(proxy._parse_model_map("a=b;a=c"), {"a": "c"})
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ── Unit tests for _normalize_for_vision ─────────────────────────────────────

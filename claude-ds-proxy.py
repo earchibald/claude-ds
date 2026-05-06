@@ -73,6 +73,17 @@
 #   VISION_MODEL        model to use when the request contains images (base64
 #                       or file-source blocks).  default: deepseek-chat
 #                       set to "" to disable auto-routing.
+#   WIRE_MODEL_MAP      semicolon-separated `<from>=<to>` pairs that rewrite
+#                       the request body's `model` field on the way out.
+#                       e.g. "claude-opus-4-7=deepseek-v4-pro;
+#                             claude-sonnet-4-6=deepseek-v4-pro;
+#                             claude-haiku-4-5=deepseek-v4-pro"
+#                       Applied BEFORE effort routing, so EFFORT_MAP keys
+#                       should reference the post-rewrite (wire) ids.
+#                       Vision routing still wins when an image is present.
+#                       Use this to bridge Claude-canonical ids (used to
+#                       satisfy claude code's auto-mode regex gate) to the
+#                       real upstream wire-level ids.
 #   PROXY_STRIP_HEADERS comma/semicolon-separated header names to
 #                       unconditionally strip from all upstream requests.
 #                       e.g. "X-Stainless-Arch,X-Stainless-OS"
@@ -293,6 +304,25 @@ except ValueError as e:
 
 DEBUG = os.environ.get("PROXY_DEBUG", "") == "1"
 VISION_MODEL = os.environ.get("VISION_MODEL", "deepseek-chat")
+
+
+def _parse_model_map(spec: str) -> dict:
+    """Parse `from=to;from=to;...` into {from: to}. Empty pairs are skipped."""
+    out: dict = {}
+    if not spec:
+        return out
+    for pair in spec.split(";"):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        src, dst = pair.split("=", 1)
+        src, dst = src.strip(), dst.strip()
+        if src and dst:
+            out[src] = dst
+    return out
+
+
+WIRE_MODEL_MAP = _parse_model_map(os.environ.get("WIRE_MODEL_MAP", ""))
 
 _up = urlsplit(UPSTREAM)
 UP_SCHEME = _up.scheme
@@ -714,6 +744,20 @@ def _rewrite_body(body: bytes) -> bytes:
         if subs:
             _log(f"rewrote {subs} file-source block(s) in messages")
 
+    # Pass 1a: rewrite the wire-level `model` id per WIRE_MODEL_MAP.
+    # This bridges Claude-canonical ids (used by claude-ds's `unlock_auto_mode`
+    # spoof to satisfy claude's auto-mode regex gate) to the real upstream id
+    # the user actually wants. DeepSeek silently aliases unknown claude-* ids
+    # to its cheapest model (flash); this rewrite prevents that silent
+    # downgrade. Runs before the vision check so vision routing can still
+    # override when an image is present.
+    if WIRE_MODEL_MAP:
+        cur = obj.get("model", "") or ""
+        mapped = WIRE_MODEL_MAP.get(cur)
+        if mapped and mapped != cur:
+            obj["model"] = mapped
+            _log(f"wire-model rewrite {cur!r} → {mapped!r}")
+
     # Pass 1b: if the request contains images and VISION_MODEL is set,
     # transparently swap the model and normalise the message list so that
     # DeepSeek can actually see the image.  _normalize_for_vision consolidates
@@ -946,6 +990,10 @@ def main():
     _log(f"listening on {bind}:{actual_port}, upstream={UPSTREAM}")
     _log(f"per-model resolvers: {sorted(EFFORT_RESOLVERS)}, default-set={DEFAULT_RESOLVER is not None}")
     _log(f"vision-model routing: {VISION_MODEL!r} (set VISION_MODEL='' to disable)")
+    if WIRE_MODEL_MAP:
+        _log(f"wire-model rewrites: {WIRE_MODEL_MAP}")
+    else:
+        _log("wire-model rewrites: <none> (set WIRE_MODEL_MAP to bridge Claude-canonical ids)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
