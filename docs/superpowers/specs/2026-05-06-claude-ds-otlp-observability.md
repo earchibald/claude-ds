@@ -26,7 +26,7 @@ Set on the OTel SDK Resource at boot, applied to every signal.
 | `service.name` | constant `"claude-ds-proxy"` | SigNoz services view groups by this. |
 | `service.version` | build-time `-ldflags -X main.version=...` | Pins a regression to a build. |
 | `service.instance.id` | `uuid.NewString()` at boot | Distinguishes parallel proxy spawns (each `claude` session gets one). |
-| `deployment.environment` | env `OTEL_DEPLOYMENT_ENVIRONMENT`, default `"local"`, forced to `"doctor"` when `CLAUDE_DS_DOCTOR=1` | Filters test runs out of dashboards. |
+| `deployment.environment` | env `OTEL_DEPLOYMENT_ENVIRONMENT`, default `"local"`, forced to `"doctor"` when `CLAUDE_DS_DIAGNOSTIC_MODE=1` (set by both `--doctor` and `--setup`, plus any future synthetic-traffic surfaces) | Filters test runs out of dashboards. |
 | `host.name` | `os.Hostname()` | Multi-machine fan-in (laptop + workstation). |
 | `claude_ds.proxy.effort_default` | `EFFORT_DEFAULT` env at boot | A spec change is a config change; surface it without diffing logs. |
 | `claude_ds.proxy.vision_model` | `VISION_MODEL` env at boot | Same reasoning — vision-route behaviour pivots on this. |
@@ -84,7 +84,7 @@ Covers an empty-message ping (256 B) through a 16 MB image-bearing request.
 |---|---|---|---|---|
 | `claude_ds.transform.count` | counter | `1` | `claude_ds.transform.step`, `claude_ds.transform.mutated` (`true`/`false`), `error.type` | One per transform step invocation. |
 | `claude_ds.transform.duration` | histogram | `ms` | `claude_ds.transform.step`, `claude_ds.transform.mutated` | Step latency. |
-| `claude_ds.effort.regime.applied` | counter | `1` | `claude_ds.effort.regime` (`none`/`high`/`max`/`passthrough`), `claude_ds.effort.bucket` (`none`/`high`/`max`), `claude_ds.model.upstream` | Distribution of regimes after resolution. |
+| `claude_ds.effort.regime.applied` | counter | `1` | `claude_ds.effort.regime` (closed enum: `none`/`high`/`max`/`passthrough`/`unknown`), `claude_ds.effort.bucket` (`none`/`high`/`max`), `claude_ds.model.upstream` | Distribution of regimes after resolution. Adding a new regime value requires a same-PR dashboard update; raw spec strings (`auto:7`, `matrix(...)`) live on logs only, never as a span/metric attribute. |
 | `claude_ds.wire_model.rewrite.count` | counter | `1` | `claude_ds.wire_model.from`, `claude_ds.wire_model.to`, `claude_ds.wire_model.kind` (`map`/`catchall`/`noop`) | Catches silent-downgrade bugs. |
 | `claude_ds.vision.route.count` | counter | `1` | `claude_ds.vision.routed` (`true`/`false`), `claude_ds.model.from`, `claude_ds.model.to` | Confirms image-bearing requests landed on the vision model. |
 | `claude_ds.header.beta.stripped` | counter | `1` | `claude_ds.header.beta_value` | One bump per stripped beta token. |
@@ -99,7 +99,7 @@ Covers an empty-message ping (256 B) through a 16 MB image-bearing request.
 | `claude_ds.stream.duration` | histogram | `ms` | as above | First byte to last byte. |
 | `claude_ds.stream.chunk.count` | histogram | `1` | as above | Chunk-count distribution per response. |
 | `claude_ds.stream.bytes` | histogram | `By` | as above | Total streamed body bytes. |
-| `claude_ds.stream.client_disconnect.count` | counter | `1` | `claude_ds.endpoint` | Bumped when the relay write returns broken-pipe / reset. |
+| `claude_ds.stream.client_disconnect.count` | counter | `1` | `claude_ds.endpoint`, `claude_ds.disconnect.cause` (closed enum: `client_eof`/`client_cancel`/`upstream_error`/`timeout`/`unknown`) | Bumped when the relay write returns broken-pipe / reset. No upstream-model attribution (drill into traces filtered by `event.name = "stream.client_disconnect"` for per-model breakdown). |
 
 ### Files API mock
 
@@ -209,7 +209,7 @@ On the root `http.server.request` for `/v1/messages`:
 | `claude_ds.model.requested` | model id as it arrived from claude (pre-rewrite). |
 | `claude_ds.model.upstream` | model id sent on the wire (post-rewrite + vision). |
 | `claude_ds.effort.bucket` | `none`/`high`/`max` from `_bucket_from_thinking`. |
-| `claude_ds.effort.regime` | resolved regime (`none`/`high`/`max`/`passthrough`). |
+| `claude_ds.effort.regime` | resolved regime (closed enum: `none`/`high`/`max`/`passthrough`/`unknown`). |
 | `claude_ds.vision.routed` | bool. |
 | `claude_ds.files.lookup.hits` / `claude_ds.files.lookup.misses` | int counts during this request. |
 | `claude_ds.stream.ttfb_ms` | numeric duplicate of the histogram contribution; embedded so a single trace tells you TTFB without cross-referencing metrics. |
@@ -286,11 +286,13 @@ Use the OTel logs SDK with the OTLP/HTTP logs exporter pointing at the same SigN
   - **Dashboards**: a 6-panel "claude-ds proxy" board (incoming p95, upstream p95, TTFB p95, transform-step p95 stacked, error-class breakdown, files cache size) is mechanical from the metric names above.
   - **Alerts**: thresholds on `http.client.request.count{error.type=upstream_unreachable}` rate > 0 over 5 min; `claude_ds.files.lookup.count{outcome=miss}` rate > 0 over 5 min; `claude_ds.stream.ttfb.duration` p95 > 5 s over 10 min.
 
-## 10. Open questions
+## 10. Resolved decisions
 
-- **Provider lifecycle on shutdown.** When the proxy goroutine ends with the parent process exiting, the OTel meter / tracer / logger providers need `Shutdown(ctx)` with a small (1 s) deadline to drain the last batch — otherwise the trailing data is lost. Recommend: 1 s grace; hard-exit only when the shutdown context times out. Confirm.
-- **Doctor instrumentation.** `--doctor` runs that hit `/v1/messages` test paths pollute the metrics. Mitigation: when started with `CLAUDE_DS_DOCTOR=1`, set `deployment.environment=doctor` so dashboards filter cleanly. Confirm scope (`--doctor` only, or also `--setup`?).
-- **Effort regime cardinality.** Current closed enum is `{none, high, max, passthrough}`. Policy if the spec grammar grows: expand the enum *and* update SigNoz dashboards in the same PR. Confirm.
-- **Disconnect attribute breadth.** `claude_ds.stream.client_disconnect.count` is attributed by `claude_ds.endpoint` only; adding `claude_ds.model.upstream` adds 5–10× cardinality. Default decision: endpoint only. Confirm.
-- **Wrapper-level span.** The `claude-ds` wrapper is a 50-line orchestrator — tracing it adds a parent span around proxy startup but creates an end-of-life problem (the wrapper exits when claude does). Recommend skip; flag in case end-to-end "click to first byte" timing is wanted.
-- **gRPC opt-in.** OTLP/gRPC at `signoz.local:30317` is also live. If a future deployment needs it, gate behind `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and pull in `otlptracegrpc`/`otlpmetricgrpc`/`otlploggrpc`. Default stays HTTP.
+Settled in the CDS-25 review session (2026-05-06). These are load-bearing — CDS-12 / CDS-15 / CDS-23 quote them.
+
+- **Provider lifecycle on shutdown — synchronous drain, 1 s ceiling.** `MeterProvider`/`TracerProvider`/`LoggerProvider` constructed in `main.go` before the proxy goroutine launches; `Shutdown(ctx)` invoked via `defer` with `context.WithTimeout(ctx, 1*time.Second)`. To make the typical-case fast, configure `BatchSpanProcessor.BatchTimeout = 250 ms` and `MaxExportBatchSize = 256` so the in-memory buffer at exit holds at most ~250 ms of spans — typical loopback drain completes in <100 ms (imperceptible to users). The 1 s ceiling exists for the failure mode (SigNoz unreachable / slow), not the common case. True async drain (detached subprocess, sidecar collector) was considered and rejected as overengineering for a single-user dev tool; revisit if we ever export to a remote backend with >50 ms RTT.
+- **Diagnostic mode env var — `CLAUDE_DS_DIAGNOSTIC_MODE=1` set by both `--doctor` and `--setup`.** Either entry point sets the env var before constructing OTel providers; the `Resource` then forces `deployment.environment=doctor`. Reusing the existing `--doctor` vocabulary (rather than introducing a third name like `diagnostic`) keeps dashboard filters readable. Any future synthetic-traffic surface (e.g. `--proxy-test`) opts in by setting the same env var.
+- **Effort regime cardinality — closed enum, expansion requires dashboard PR.** `claude_ds.effort.regime` ∈ `{none, high, max, passthrough, unknown}`. `unknown` is a permanent backstop for "ID we shipped without updating the enum" — alert on it. New regime values require a same-PR update to SigNoz dashboards (the enum is a public observability contract). Parametric spec details (`auto:7`, `matrix(...)`) live on log lines only — never as span or metric attributes — so the indexed cardinality stays bounded.
+- **Disconnect metric attribution — endpoint + cause, no model.** `claude_ds.stream.client_disconnect.count` is attributed by `{claude_ds.endpoint, claude_ds.disconnect.cause}`. `disconnect.cause` is a closed enum `{client_eof, client_cancel, upstream_error, timeout, unknown}` — 5 values, real diagnostic value. Upstream-model attribution is deliberately absent: the metric answers "is the disconnect rate creeping up?" (an aggregate question), and per-model breakdowns are available on demand by drilling into traces filtered by `event.name = "stream.client_disconnect"`. The metric stays cheap; the deep-dive lives on traces.
+- **Wrapper-level span — skip.** No session-wide `claude_ds.session` parent span. The wrapper exits when `claude` does, so a wrapper span would last hours of user think-time and would re-parent every request trace, breaking the "one root trace per request" invariant SigNoz relies on. Specific short-lived spans for individual operations (proxy spawn, doctor checks, config load) are fine when CDS-23 deems them useful, but no wrapping parent. If end-to-end "click to first byte" timing is ever wanted, ship it as a one-shot `claude_ds.startup.ms` histogram metric — not a span.
+- **Transport — `otlp_protocol={http,grpc}`, default `http`, both always vendored.** OTLP/HTTP is the default (easier to debug on loopback with `tcpdump -A`; thinner dependency surface). gRPC is opt-in via the `otlp_protocol` config key or the OTel-standard `OTEL_EXPORTER_OTLP_PROTOCOL` env var (env wins on conflict, matching SDK convention). Both protocol exporter sets (`otlptracehttp`/`otlpmetrichttp`/`otlploghttp` and the `*grpc` siblings) are always vendored — no build tags. Binary-size cost is trivial (~3 MB); build-tag complexity is not. Endpoint format differs by protocol (HTTP wants `http://signoz.local:30318` with paths appended by the SDK; gRPC wants `signoz.local:30317` plus `WithInsecure()`); CDS-12 validates the `otlp_endpoints` shape per protocol.

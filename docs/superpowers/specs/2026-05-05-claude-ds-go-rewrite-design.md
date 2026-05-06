@@ -432,7 +432,7 @@ fewer transport, easier `tcpdump` debugging on loopback.
 otlp_endpoints              # CSV of OTLP/HTTP base URLs; default empty (disabled)
 otlp_headers                # semicolon-separated Name: value pairs, secretref-resolvable
 otlp_service_name           # default "claude-ds-proxy"
-otlp_deployment_environment # default "local"; forced to "doctor" by --doctor / CLAUDE_DS_DOCTOR=1
+otlp_deployment_environment # default "local"; forced to "doctor" by CLAUDE_DS_DIAGNOSTIC_MODE=1 (set by --doctor and --setup)
 otlp_resource_attributes    # comma-separated key=value; merged into the SDK Resource
 otlp_protocol               # "http" (default) | "grpc"
 ```
