@@ -129,9 +129,9 @@ func run(args []string) int {
 	case subcommandDoctor:
 		return runTODO("--doctor", "CDS-19")
 	case subcommandSetup:
-		return runTODO("--setup", "CDS-13")
+		return runSetupCmd()
 	case subcommandRotateKey:
-		return runTODO("--rotate-key / --reset-password", "CDS-13")
+		return runRotateKeyCmd()
 	case subcommandProxyOff:
 		return runTODO("--proxy-off", "CDS-15 / CDS-23")
 	case subcommandProxyOn:
@@ -244,6 +244,75 @@ func runHelp(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// ensureConfig is the head-of-launch hook installed by CDS-21. If the
+// config file doesn't exist, run first-run onboarding and write the
+// resulting config to disk. Returns a non-zero exit code on any
+// onboarding failure (we'd rather surface the error than silently
+// continue with no config). Existing-file case is a no-op — load
+// happens later in the normal launch path.
+func ensureConfig() int {
+	path, err := configPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: %v\n", err)
+		return 1
+	}
+	if _, err := os.Stat(path); err == nil {
+		return 0
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "claude-ds: stat config: %v\n", err)
+		return 1
+	}
+	cfg, err := runFirstRun()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: onboarding failed: %v\n", err)
+		return 1
+	}
+	if cfg == nil {
+		// Shouldn't happen on first-run (only --setup can return nil),
+		// but guard anyway so a stray nil doesn't NPE downstream.
+		return 1
+	}
+	cfg.Path = path
+	if err := WriteConfig(path, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: write config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "claude-ds: wrote config to %s\n", path)
+	return 0
+}
+
+// runSetupCmd dispatches the --setup flag. Mirrors the Bash launcher's
+// "config exists? ask whether to re-run; otherwise, treat as first-run"
+// semantics. Either way, exit cleanly without launching claude.
+func runSetupCmd() int {
+	cfg, err := runSetup()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: --setup: %v\n", err)
+		return 1
+	}
+	if cfg == nil {
+		// User declined to re-run; nothing to write.
+		return 0
+	}
+	if err := WriteConfig(cfg.Path, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: write config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "claude-ds: wrote config to %s\n", cfg.Path)
+	return 0
+}
+
+// runRotateKeyCmd dispatches the --rotate-key / --reset-password flag.
+// Preserves all existing config fields except api_key_ref (and the
+// resolved key); writes the file back at the same path.
+func runRotateKeyCmd() int {
+	if err := runRotateKey(); err != nil {
+		fmt.Fprintf(os.Stderr, "claude-ds: --rotate-key: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 // runTODO is the placeholder body for subcommands owned by other CDS-NN
 // issues. Prints a one-line stub to stderr and exits 0 so downstream
 // callers (tests, orchestrator smoke checks) don't trip on a
@@ -258,7 +327,14 @@ func runTODO(name, owner string) int {
 // exec). For now, if claude isn't on PATH we emit a TODO; if it is, we
 // invoke it with the passthrough args so `claude-ds -- <args>` already
 // satisfies acceptance criterion 5 today.
+//
+// CDS-21 wired the no-config-on-disk → first-run prompt at the head of
+// this function so users who run `claude-ds` with no config file get
+// the onboarding flow before claude is ever exec'd.
 func runLaunch(passthrough []string) int {
+	if rc := ensureConfig(); rc != 0 {
+		return rc
+	}
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "TODO: default launch (CDS-23) — claude not on PATH; install: https://docs.anthropic.com/claude-code")
