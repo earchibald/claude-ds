@@ -18,6 +18,14 @@ __pycache__/
 # it. Anything under bin/ is build-only and never committed.
 bin/
 
+# Local-only dev stubs that satisfy cross-branch symbol dependencies.
+# E.g. CDS-12 depends on CDS-13's Resolve(); a stub in _dev/ lets
+# devs compile and test their branch standalone before the orchestrator
+# merges the sibling. The leading underscore excludes _dev/ from
+# `go build ./...` automatically; this entry is belt-and-braces so a
+# stray copy at the repo root is also ignored.
+_dev/
+
 # Per-platform release artifacts produced by the release workflow's
 # Go build matrix (uploaded to the release, never committed).
 claude-ds-darwin-amd64
