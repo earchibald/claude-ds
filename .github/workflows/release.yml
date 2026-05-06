@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract changelog entry
+        id: changelog
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+
+            const tag = process.env.GITHUB_REF_NAME;
+            const version = tag.replace(/^v/, '');
+
+            // Match header like "## [0.8.0]" or "## [0.8.0] - 2026-05-05"
+            const headerRe = /^## \[(.+?)\].*$/gm;
+            let match, start, end;
+
+            while ((match = headerRe.exec(changelog)) !== null) {
+              if (match[1] === version) {
+                start = match.index;
+              } else if (start !== undefined && end === undefined) {
+                end = match.index;
+                break;
+              }
+            }
+
+            if (start === undefined) {
+              core.setFailed(`Section for version ${version} not found in CHANGELOG.md`);
+              return;
+            }
+
+            let body = changelog.slice(start, end).trim();
+
+            // Remove trailing reference links (e.g. [0.8.0]: https://...)
+            body = body.replace(/\n\[.+?\]:\s+\S+/g, '').trim();
+
+            // Write to file (safe for multiline content)
+            fs.writeFileSync('release-notes.md', body);
+            core.setOutput('tag', tag);
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.changelog.outputs.tag }}" \
+            --title "${{ steps.changelog.outputs.tag }}" \
+            --notes-file release-notes.md \
+            --verify-tag
