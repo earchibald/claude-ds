@@ -82,9 +82,14 @@ checklist and tells you exactly what to fix.
 ## Quickstart
 
 ```bash
-# Zero to configured in one command:
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+# Zero to configured in one command (latest stable release):
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
 ```
+
+The installer pins to a **tagged release** — you get a known-good version,
+not whatever landed on `main` five minutes ago. Each release is published
+on the [GitHub Releases](https://github.com/earchibald/claude-ds/releases)
+page with a changelog extracted from [CHANGELOG.md](CHANGELOG.md).
 
 The installer asks where to install (`~/.local/bin` by default, or
 `/usr/local/bin`, or a custom path), handles `sudo` transparently when
@@ -132,25 +137,51 @@ claude-ds --rotate-key   # rotate the stored API key
 ### curl | bash (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
 ```
+
+**Always pin to a release tag** (`v0.8.0`, `v0.7.4`, etc.) — you get a
+deterministic, tested version. Check the [Releases](https://github.com/earchibald/claude-ds/releases)
+page for the latest tag and corresponding changelog.
 
 The installer is interactive — it asks where to install, handles `sudo`,
 and runs first-time onboarding. See [Quickstart](#quickstart) for what
 to expect.
 
-### Manual curl
+### Upgrading
+
+Re-run the installer with the new tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/install.sh | bash
+```
+
+The installer detects an existing install and offers to overwrite.
+Your config (`~/.config/claude-ds/config`) is never touched — the
+installer only replaces the wrapper and proxy script binaries.
+
+### Manual (no installer)
 
 ```bash
 mkdir -p ~/.local/bin
-curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds         -o ~/.local/bin/claude-ds
-curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/main/claude-ds-proxy.py -o ~/.local/bin/claude-ds-proxy.py
+curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/claude-ds         -o ~/.local/bin/claude-ds
+curl -fL https://raw.githubusercontent.com/earchibald/claude-ds/v0.8.0/claude-ds-proxy.py -o ~/.local/bin/claude-ds-proxy.py
 chmod +x ~/.local/bin/claude-ds
 # Both files must share a directory — the wrapper resolves
 # `claude-ds-proxy.py` from the directory of its own real path.
 ```
 
 Make sure `~/.local/bin` is on `$PATH`.
+
+### Bleeding edge (`main` branch)
+
+If you need an unreleased fix or want to test a PR before it lands in a
+release, you can install from `main`. **No guarantees — `main` moves
+independently of tagged releases and may not match any published changelog.**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/earchibald/claude-ds/main/install.sh | bash
+```
 
 ### Requirements
 
@@ -163,16 +194,19 @@ Make sure `~/.local/bin` is on `$PATH`.
 | `infisical` CLI | only for `infisical://` secret references |
 | `secret-tool` (Linux, libsecret) | only for `system://` references on Linux. macOS uses the built-in `security` command. |
 
-### From this repo (development checkout)
+### Development checkout
 
 ```bash
 git clone https://github.com/earchibald/claude-ds.git
-ln -s "$PWD/claude-ds/claude-ds" ~/.local/bin/claude-ds
-# The proxy does NOT need to be symlinked separately — the wrapper
-# canonicalises its own path with a portable readlink loop, so
-# `dirname(realpath(claude-ds))` lands in the source tree where the proxy
-# already lives.
+cd claude-ds
+./claude-ds --version
+# Or symlink it:
+ln -s "$PWD/claude-ds" ~/.local/bin/claude-ds
 ```
+
+The wrapper resolves the proxy script relative to its own real path
+(after symlink resolution), so running directly from the source tree
+works without a separate proxy symlink.
 
 ### Verifying
 
