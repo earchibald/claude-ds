@@ -368,19 +368,17 @@ func TestRewriteBody_OnlyEffort_NoMutation(t *testing.T) {
 // ---------------------------------------------------------------------
 
 // TestVisionSkipsEffortRewrite verifies that when the request body
-// contains an image (which CDS-19 will eventually route to the vision
-// model), the effort regime is not applied. We run this through the
-// real Proxy so we observe the pipeline ordering — including the
-// `if !visionInfo.Routed { runEffort(...) }` gate in messagesHandler.
+// contains an image and a vision model is configured, the effort
+// regime is NOT applied — the `if !visionInfo.Routed { runEffort(...) }`
+// gate in messagesHandler must short-circuit. Vision backends
+// (deepseek-chat, deepseek-v4-flash) reject extended-thinking blocks
+// with "I cannot see this image" responses, so this is a hard
+// invariant.
 //
-// CDS-19 hasn't landed yet, so today the vision stub returns
-// Routed=false and effort *will* still apply on image-bearing
-// requests. The assertion here is forward-looking: it captures the
-// current behaviour so the CDS-19 PR has a concrete signal of when to
-// flip the test to the post-routing form. For CDS-18, the substantive
-// invariant is that hasImageContent correctly detects images — that
-// is covered by TestHasImageContent above.
-func TestVisionSkipsEffortRewrite_StubBehaviour(t *testing.T) {
+// We run through the real Proxy + httptest upstream so the assertion
+// observes the full pipeline ordering, not just the routeVision
+// in-process contract (covered separately in vision_test.go).
+func TestVisionSkipsEffortRewrite(t *testing.T) {
 	// Dummy upstream that records what it received. We only care about
 	// the request body the proxy forwarded.
 	var captured []byte
@@ -394,6 +392,7 @@ func TestVisionSkipsEffortRewrite_StubBehaviour(t *testing.T) {
 	cfg := &Config{
 		BaseURL:      upstream.URL,
 		Model:        "deepseek-v4-pro",
+		VisionModel:  "deepseek-chat",
 		ProxyEffort:  "max",
 		ProxyBind:    "127.0.0.1",
 		Unknown:      map[string]string{},
@@ -408,8 +407,8 @@ func TestVisionSkipsEffortRewrite_StubBehaviour(t *testing.T) {
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
 
-	// Request body with an inline image — when CDS-19 lands, this
-	// should bypass the effort rewrite.
+	// Request body with an inline image — vision routing must fire and
+	// the effort regime must NOT be applied (no `thinking` injection).
 	in := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`
 	resp, err := http.Post("http://"+p.Addr()+"/v1/messages", "application/json", strings.NewReader(in))
 	if err != nil {
@@ -421,15 +420,16 @@ func TestVisionSkipsEffortRewrite_StubBehaviour(t *testing.T) {
 	if len(captured) == 0 {
 		t.Fatalf("upstream did not receive a body")
 	}
-	// Today (CDS-19 stub returns Routed=false) effort runs — so the
-	// thinking block is injected. This documents the current state;
-	// CDS-19's PR flips this assertion to the post-routing form.
 	var obj map[string]any
 	if err := json.Unmarshal(captured, &obj); err != nil {
 		t.Fatalf("unmarshal upstream body: %v", err)
 	}
-	if _, hasThinking := obj["thinking"]; !hasThinking {
-		t.Fatalf("expected thinking block under current vision stub; CDS-19 will flip this test")
+	if _, hasThinking := obj["thinking"]; hasThinking {
+		t.Fatalf("vision route should have skipped effort rewrite; got thinking=%v", obj["thinking"])
+	}
+	// Vision routing should also have overridden the model.
+	if got, _ := obj["model"].(string); got != "deepseek-chat" {
+		t.Fatalf("model not overridden to vision model; got %q", got)
 	}
 }
 

@@ -86,6 +86,7 @@ var knownKeys = []string{
 	"model_sonnet",
 	"model_haiku",
 	"model_small_fast",
+	"vision_model",
 	"capabilities",
 	"unlock_auto_mode",
 	"proxy_effort",
@@ -149,6 +150,12 @@ type Config struct {
 	ModelSonnet    string
 	ModelHaiku     string
 	ModelSmallFast string
+
+	// VisionModel is the upstream id used when a /v1/messages body
+	// contains image content (direct or nested in tool_result). Empty
+	// disables vision routing entirely (matches the Python proxy's
+	// `VISION_MODEL=''` semantics — see claude-ds-proxy.py:306, 776).
+	VisionModel string
 
 	Capabilities   string
 	UnlockAutoMode bool
@@ -504,6 +511,8 @@ func assignKnown(cfg *Config, k, v string) {
 		cfg.ModelHaiku = v
 	case "model_small_fast":
 		cfg.ModelSmallFast = v
+	case "vision_model":
+		cfg.VisionModel = v
 	case "capabilities":
 		cfg.Capabilities = v
 	case "unlock_auto_mode":
@@ -773,6 +782,8 @@ func serializeKnown(cfg *Config, k string) (string, bool) {
 		return cfg.ModelHaiku, cfg.ModelHaiku != ""
 	case "model_small_fast":
 		return cfg.ModelSmallFast, cfg.ModelSmallFast != ""
+	case "vision_model":
+		return cfg.VisionModel, cfg.VisionModel != ""
 	case "capabilities":
 		return cfg.Capabilities, cfg.Capabilities != ""
 	case "unlock_auto_mode":

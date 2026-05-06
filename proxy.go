@@ -10,7 +10,7 @@
 //
 // Routing:
 //   POST /v1/messages → messagesHandler — body rewriting (file_id →
-//     base64 via CDS-18 stub, vision routing via CDS-19 stub, effort
+//     base64 + wire-model via CDS-18, vision routing via CDS-19, effort
 //     spec via CDS-11), header pipeline, upstream forward, SSE stream.
 //   POST /v1/files    → filesHandler — Files API mock (CDS-16, lives in
 //     files.go; this file only registers it on the mux).
@@ -144,16 +144,39 @@ type RewriteInfo struct {
 	Mutated bool
 }
 
-// VisionInfo summarises the vision-routing decision. CDS-19 will fill
-// the fields; for now the stub returns a zero value.
+// VisionInfo summarises the vision-routing decision (CDS-19).
+//
+// Every field is a count, flag, or bounded enum — never image bytes,
+// image URLs, tool argument values, or message content. The fields back
+// the OTLP `claude_ds.transform.vision_route` span attributes and the
+// `claude_ds.vision.route.count` counter.
 type VisionInfo struct {
-	// Routed is true when the request was redirected to VISION_MODEL.
+	// Routed is true when the request was redirected to VisionModel.
 	Routed bool
-	// ImagesCollected is the count of image content blocks the
-	// detector found (direct or via tool_result).
+
+	// ImageCount is the number of image blocks consolidated into the
+	// last user turn (direct + nested-in-tool_result combined). Drives
+	// the `claude_ds.vision.images.count` span attribute.
+	ImageCount int
+
+	// ImagesCollected is preserved for backwards-compat with the
+	// CDS-15 span attribute (`claude_ds.vision.images_collected`).
+	// Kept as a mirror of ImageCount so existing dashboards keep
+	// working while CDS-25 settles the final attribute name.
 	ImagesCollected int
+
+	// ToolUseConverted is the number of `tool_use` blocks rewritten
+	// to plain-text labels.
+	ToolUseConverted int
+
+	// ToolsDropped / ToolChoiceDropped record whether the top-level
+	// `tools` / `tool_choice` keys were present (and stripped) on the
+	// inbound body. Booleans only — we never record the values.
+	ToolsDropped      bool
+	ToolChoiceDropped bool
+
 	// ModelFrom / ModelTo are the pre/post-route model ids — bounded
-	// by the user's WIRE_MODEL_MAP and VISION_MODEL config.
+	// by the user's WIRE_MODEL_MAP and VisionModel config.
 	ModelFrom string
 	ModelTo   string
 }
@@ -546,8 +569,8 @@ func newProxyMetrics(m metric.Meter) (*proxyMetrics, error) {
 //  1. Read body (bounded by net/http MaxBytesReader-style guard at the
 //     listener level; the proxy does not impose a body cap of its own
 //     since claude is a trusted client).
-//  2. rewriteBody (CDS-18 stub) — file_id → base64, wire-model rewrite.
-//  3. routeVision (CDS-19 stub) — vision routing if images present.
+//  2. rewriteBody (CDS-18) — file_id → base64, wire-model rewrite.
+//  3. routeVision (CDS-19) — vision routing if images present.
 //  4. Effort spec via BucketFromThinking + ApplyRegime (CDS-11) when
 //     vision did not route.
 //  5. Header pipeline.
@@ -680,9 +703,10 @@ func (p *Proxy) runRewrite(ctx context.Context, body []byte) ([]byte, RewriteInf
 	return body2, info
 }
 
-// runVision invokes the CDS-19 stub under a claude_ds.transform.vision_route
-// span. The stub returns the body unchanged + an empty VisionInfo until
-// CDS-19 lands.
+// runVision invokes the CDS-19 routeVision implementation under a
+// claude_ds.transform.vision_route span. Returns the (possibly
+// rewritten) body and the VisionInfo that drives the span attributes
+// + the claude_ds.vision.route.count counter.
 func (p *Proxy) runVision(ctx context.Context, body []byte) ([]byte, VisionInfo) {
 	ctx, span := p.tracer.Start(ctx, "claude_ds.transform.vision_route")
 	defer span.End()
@@ -699,6 +723,12 @@ func (p *Proxy) runVision(ctx context.Context, body []byte) ([]byte, VisionInfo)
 		attribute.Bool("claude_ds.transform.mutated", info.Routed),
 		attribute.Bool("claude_ds.vision.routed", info.Routed),
 		attribute.Int("claude_ds.vision.images_collected", info.ImagesCollected),
+		attribute.Int("claude_ds.vision.images.count", info.ImageCount),
+		attribute.Int("claude_ds.vision.tool_use.converted_count", info.ToolUseConverted),
+		attribute.Bool("claude_ds.vision.tools_dropped", info.ToolsDropped),
+		attribute.Bool("claude_ds.vision.tool_choice_dropped", info.ToolChoiceDropped),
+		attribute.String("claude_ds.model.from", info.ModelFrom),
+		attribute.String("claude_ds.model.to", info.ModelTo),
 	)
 	p.metrics.transformCount.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("claude_ds.transform.step", "vision_route"),
@@ -1070,17 +1100,10 @@ func (p *Proxy) emitLog(ctx context.Context, sev otellog.Severity, msg string, a
 	p.logger.Emit(ctx, rec)
 }
 
-// ---------- Phase-4 stubs ---------------------------------------------------
+// ---------- Phase-4 helpers -------------------------------------------------
 //
 // rewriteBody is the real CDS-18 implementation — see rewrite.go.
-// routeVision is the CDS-19 stub: it returns the body unchanged plus
-// an empty VisionInfo (Routed=false). CDS-19 replaces it with vision
-// routing; the signature is preserved so this file doesn't need to
-// change again.
-
-func routeVision(b []byte, _ *Config) ([]byte, VisionInfo, error) {
-	return b, VisionInfo{}, nil
-}
+// routeVision is the real CDS-19 implementation — see vision.go.
 
 // looksLikeJSON is a cheap discriminator to avoid Unmarshal noise on
 // non-JSON bodies. Mirrors the Python proxy's `try: json.loads ... except`.
