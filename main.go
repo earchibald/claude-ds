@@ -75,10 +75,11 @@ func run(args []string) int {
 	// it is forwarded to claude unchanged, even if it looks like a
 	// claude-ds flag. This is the contract from acceptance criterion 5.
 	var (
-		passthrough []string
-		cmd         = subcommandLaunch // default action
-		proxyOnSpec string
+		passthrough   []string
+		cmd           = subcommandLaunch // default action
+		proxyOnSpec   string
 		sawDoubleDash bool
+		noUpdateCheck bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -96,6 +97,9 @@ func run(args []string) int {
 
 		case a == "--version" || a == "-V":
 			cmd = subcommandVersion
+
+		case a == "--print-schema":
+			cmd = subcommandPrintSchema
 
 		case a == "--help" || a == "-h":
 			cmd = subcommandHelp
@@ -122,9 +126,8 @@ func run(args []string) int {
 
 		case a == "--no-update-check":
 			// Doesn't change the dispatched command — it's a modifier on
-			// the default-launch path. CDS-18 reads this from the
-			// environment-equivalent gate.
-			passthrough = append(passthrough, a)
+			// the default-launch path. Honoured below in runLaunch.
+			noUpdateCheck = true
 
 		case a == "upgrade" || a == "update":
 			// Subcommand only valid as the first non-flag arg; bail out
@@ -142,6 +145,9 @@ func run(args []string) int {
 	switch cmd {
 	case subcommandVersion:
 		return runVersion(os.Stdout, os.Stderr)
+	case subcommandPrintSchema:
+		fmt.Fprintln(os.Stdout, CurrentSchema)
+		return 0
 	case subcommandHelp:
 		return runHelp(os.Stdout, os.Stderr)
 	case subcommandDoctor:
@@ -167,8 +173,14 @@ func run(args []string) int {
 		_ = proxyOnSpec // CDS-15 / CDS-23 will read this
 		return runTODO("--proxy-on", "CDS-15 / CDS-23")
 	case subcommandUpgrade:
-		return runTODO("upgrade / update", "CDS-18")
+		return runUpgrade()
 	default:
+		// Default-launch path. Fire the startup update check (no-op if
+		// gated out) before handing off to claude.
+		if !noUpdateCheck {
+			cfg, _ := LoadConfig(userConfigPath())
+			startupUpdateCheck(cfg)
+		}
 		return runLaunch(passthrough)
 	}
 }
@@ -186,6 +198,7 @@ const (
 	subcommandProxyOff
 	subcommandProxyOn
 	subcommandUpgrade
+	subcommandPrintSchema
 )
 
 // runVersion satisfies acceptance criterion 2: print VERSION, then try
@@ -320,6 +333,8 @@ USAGE:
 
 OPTIONS:
     --version, -V             Print version (claude-ds + claude --version)
+    --print-schema            Print the compiled-in config schema number, then exit
+                              (used by the self-updater to detect schema bumps)
     --help, -h                Print this help (forwards claude --help via $PAGER)
     --doctor                  Run 6-step diagnostics, then exit
     --setup                   Run first-run onboarding, then exit
