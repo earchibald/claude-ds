@@ -323,6 +323,7 @@ def _parse_model_map(spec: str) -> dict:
 
 
 WIRE_MODEL_MAP = _parse_model_map(os.environ.get("WIRE_MODEL_MAP", ""))
+_DEFAULT_UPSTREAM_MODEL = os.environ.get("DEFAULT_UPSTREAM_MODEL", "")
 
 _up = urlsplit(UPSTREAM)
 UP_SCHEME = _up.scheme
@@ -757,6 +758,13 @@ def _rewrite_body(body: bytes) -> bytes:
         if mapped and mapped != cur:
             obj["model"] = mapped
             _log(f"wire-model rewrite {cur!r} → {mapped!r}")
+        elif cur.startswith("claude-") and _DEFAULT_UPSTREAM_MODEL:
+            # Catch-all: any unrecognised claude-* id (new model gen, internal
+            # code path, etc.) is silently aliased to flash by DeepSeek. Map it
+            # to the default model so the user gets the real model they paid for
+            # instead of a silent downgrade.
+            obj["model"] = _DEFAULT_UPSTREAM_MODEL
+            _log(f"wire-model rewrite (catch-all) {cur!r} → {_DEFAULT_UPSTREAM_MODEL!r}")
 
     # Pass 1b: if the request contains images and VISION_MODEL is set,
     # transparently swap the model and normalise the message list so that
@@ -832,10 +840,10 @@ class Proxy(BaseHTTPRequestHandler):
             return
 
         # ── /v1/messages rewriting ─────────────────────────────────────────
+        # /v1/messages is always JSON per the Anthropic API spec.  _rewrite_body
+        # safely passes through non-JSON bodies, so no Content-Type gate needed.
         if _should_inject(self.command, self.path) and body:
-            ctype = (self.headers.get("Content-Type") or "").lower()
-            if "json" in ctype:
-                body = _rewrite_body(body)
+            body = _rewrite_body(body)
 
         fwd_headers = _build_upstream_headers(self.headers, body)
 
@@ -992,6 +1000,8 @@ def main():
     _log(f"vision-model routing: {VISION_MODEL!r} (set VISION_MODEL='' to disable)")
     if WIRE_MODEL_MAP:
         _log(f"wire-model rewrites: {WIRE_MODEL_MAP}")
+        if _DEFAULT_UPSTREAM_MODEL:
+            _log(f"wire-model catch-all: claude-* → {_DEFAULT_UPSTREAM_MODEL!r}")
     else:
         _log("wire-model rewrites: <none> (set WIRE_MODEL_MAP to bridge Claude-canonical ids)")
     try:
